@@ -1,850 +1,1429 @@
-import speech_recognition as sr
-import pyttsx3
+#!/usr/bin/env python3
+"""
+PA — Personal Assistant v2.3
+Wake word: pvporcupine (offline) with Google Speech fallback
+Install:
+    pip install SpeechRecognition sounddevice numpy pyttsx3 psutil
+    pip install requests wikipedia pyjokes pyautogui
+    pip install pvporcupine  (optional but recommended for wake word)
+"""
+
 import datetime
 import webbrowser
 import os
-import wikipedia
-import pywhatkit
-import random
-import tkinter as tk
-import requests
-import pyjokes
 import threading
-import psutil
+import time
+import re
+import socket
+import queue
 import platform
 import subprocess
-import json
-import socket
-import urllib.request
-import smtplib
-from email.mime.text import MIMEText
-import time
-import winsound  # For Windows beep sounds
+import random
+import math
+import tkinter as tk
+import tkinter.messagebox as msgbox
 
-# Optional: alternative audio capture when PyAudio is unavailable
+# ── OPTIONAL IMPORTS ──────────────────────────────────────────────────────────
+try:
+    import speech_recognition as sr
+    SR_AVAILABLE = True
+except ImportError:
+    SR_AVAILABLE = False
+    sr = None
+
 try:
     import sounddevice as sd
     import numpy as np
     SOUNDDEVICE_AVAILABLE = True
 except ImportError:
     SOUNDDEVICE_AVAILABLE = False
+    sd = None
+    np = None
 
-# Check if PyAudio is available
-PYAUDIO_AVAILABLE = False
 try:
     import pyaudio
     PYAUDIO_AVAILABLE = True
-except ImportError:
+except (ImportError, OSError):
     PYAUDIO_AVAILABLE = False
 
-
-# Voice engine setup
+# pvporcupine — offline wake word engine (no internet needed)
 try:
-    engine = pyttsx3.init()
-    voices = engine.getProperty('voices')
-    if voices:
-        engine.setProperty('voice', voices[0].id)  # Use first available voice
-    engine.setProperty('rate', 170)
+    import pvporcupine
+    PORCUPINE_AVAILABLE = True
+except ImportError:
+    PORCUPINE_AVAILABLE = False
+    pvporcupine = None
+
+try:
+    import pyttsx3
+    _tts_test        = pyttsx3.init()
+    _tts_voices_list = _tts_test.getProperty('voices') or []
+    TTS_VOICE_IDX    = 1 if len(_tts_voices_list) > 1 else 0
+    TTS_VOICE_ID     = _tts_voices_list[TTS_VOICE_IDX].id if _tts_voices_list else None
+    _tts_test.stop()
+    del _tts_test
     TTS_AVAILABLE = True
-except Exception as e:
-    print(f"TTS engine initialization failed: {e}")
+except Exception:
     TTS_AVAILABLE = False
+    TTS_VOICE_ID  = None
+
+try:
+    import psutil
+    PSUTIL_AVAILABLE = True
+except ImportError:
+    PSUTIL_AVAILABLE = False
+    psutil = None
+
+try:
+    import requests
+    REQUESTS_AVAILABLE = True
+except ImportError:
+    REQUESTS_AVAILABLE = False
+    requests = None
+
+try:
+    import wikipedia
+    WIKI_AVAILABLE = True
+except ImportError:
+    WIKI_AVAILABLE = False
+    wikipedia = None
+
+try:
+    import pyjokes
+    JOKES_AVAILABLE = True
+except ImportError:
+    JOKES_AVAILABLE = False
+    pyjokes = None
+
+try:
+    import pyautogui
+    PYAUTOGUI_AVAILABLE = True
+except ImportError:
+    PYAUTOGUI_AVAILABLE = False
+    pyautogui = None
+
+# ── CONSTANTS ─────────────────────────────────────────────────────────────────
+VERSION       = "2.3"
+WAKE_WORD     = "hey pa"
+SAMPLE_RATE   = 16000
+CHANNELS      = 1
+DTYPE         = 'int16'
+CHUNK_MS      = 30
+CHUNK_SAMPLES = int(SAMPLE_RATE * CHUNK_MS / 1000)
+
+IS_WINDOWS = platform.system() == "Windows"
+IS_LINUX   = platform.system() == "Linux"
+IS_MAC     = platform.system() == "Darwin"
+
+C = {
+    'bg0':'#070B14','bg1':'#0C1220','bg2':'#111827','bg3':'#192338','bg4':'#1F2D47',
+    'gold':'#F5C518','gold_dim':'#8A6C0A','teal':'#00E5CC','violet':'#9B59FF',
+    'coral':'#FF5C5C','mint':'#39FF85','txt0':'#F0F6FF','txt1':'#8DA4C8',
+    'txt2':'#3D566E','border':'#1E3054','orange':'#FF8C30',
+}
+FNT_BTN  = ("Helvetica Neue", 9, "bold")
+FNT_MONO = ("Courier New", 10)
+
+# ── GUI QUEUE ─────────────────────────────────────────────────────────────────
+gui_queue = queue.Queue()
+
+def q(fn, *args):
+    gui_queue.put((fn, args))
+
+def flush_gui():
+    try:
+        while True:
+            fn, args = gui_queue.get_nowait()
+            fn(*args)
+    except queue.Empty:
+        pass
+    ROOT.after(40, flush_gui)
+
+# ── TTS WORKER ────────────────────────────────────────────────────────────────
+_tts_q = queue.Queue()
+
+def _tts_worker():
     engine = None
-
-# Speak function
-def speak(text):
-    output_text.insert(tk.END, "Assistant: " + text + "\n")
-    output_text.see(tk.END)  # Auto-scroll to bottom
-
-    if TTS_AVAILABLE and engine:
+    if TTS_AVAILABLE:
         try:
-            # Run TTS in a separate thread to avoid blocking GUI
-            def tts_thread():
+            engine = pyttsx3.init()
+            engine.setProperty('rate', 165)
+            engine.setProperty('volume', 1.0)
+            if TTS_VOICE_ID:
+                engine.setProperty('voice', TTS_VOICE_ID)
+        except Exception:
+            engine = None
+    while True:
+        text = _tts_q.get()
+        if text is None:
+            break
+        if engine:
+            try:
+                engine.say(text)
+                engine.runAndWait()
+            except Exception:
                 try:
+                    engine = pyttsx3.init()
+                    engine.setProperty('rate', 165)
+                    engine.setProperty('volume', 1.0)
+                    if TTS_VOICE_ID:
+                        engine.setProperty('voice', TTS_VOICE_ID)
                     engine.say(text)
                     engine.runAndWait()
-                except Exception as e:
-                    output_text.insert(tk.END, f"[TTS Error: {e}]\n")
-                    output_text.see(tk.END)
+                except Exception:
+                    pass
+        _tts_q.task_done()
 
-            threading.Thread(target=tts_thread, daemon=True).start()
-        except Exception as e:
-            output_text.insert(tk.END, f"[TTS Error: {e}]\n")
-            output_text.see(tk.END)
-    else:
-        output_text.insert(tk.END, "[Text-to-speech not available]\n")
-        output_text.see(tk.END)
+threading.Thread(target=_tts_worker, daemon=True).start()
 
+# ── OUTPUT ────────────────────────────────────────────────────────────────────
+def speak(text, tts=True):
+    ts = datetime.datetime.now().strftime("%H:%M:%S")
+    q(_console_write, f"[{ts}] PA: {text}\n", "pa")
+    if tts and TTS_AVAILABLE:
+        _tts_q.put(text)
 
-# Greeting
-def greet():
-    hour = datetime.datetime.now().hour
+def user_echo(text):
+    ts = datetime.datetime.now().strftime("%H:%M:%S")
+    q(_console_write, f"[{ts}] You: {text}\n", "user")
 
-    if hour < 12:
-        speak("Good Morning")
-    elif hour < 18:
-        speak("Good Afternoon")
-    else:
-        speak("Good Evening")
+def info(text):    q(_console_write, f"  i  {text}\n", "info")
+def warn(text):    q(_console_write, f"  !  {text}\n", "warn")
+def err(text):     q(_console_write, f"  x  {text}\n", "err")
+def success(text): q(_console_write, f"  ok  {text}\n", "ok")
 
-    speak("I am your personal desktop assistant.")
+def _console_write(text, tag="normal"):
+    console.config(state=tk.NORMAL)
+    console.insert(tk.END, text, tag)
+    console.see(tk.END)
+    console.config(state=tk.DISABLED)
 
-# Voice recognition (with GUI text input fallback)
-def take_command():
-    """Get command from user - voice first, then GUI text input"""
+def set_status(text, color=None):
+    q(_do_set_status, text, color or C['teal'])
+
+def _do_set_status(text, color):
+    status_var.set(text)
+    status_lbl.config(fg=color)
+
+def set_wake_led(state):
+    q(_do_wake_led, state)
+
+def _do_wake_led(state):
+    styles = {
+        'idle':      ("IDLE",      C['txt2']),
+        'scanning':  ("SCANNING",  C['gold']),
+        'heard':     ("WAKE!",     C['mint']),
+        'listening': ("LISTENING", C['coral']),
+    }
+    txt, col = styles.get(state, styles['idle'])
+    wake_led.config(text=txt, fg=col)
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  CALIBRATION — called ONCE at startup, no duplicate calls
+# ══════════════════════════════════════════════════════════════════════════════
+_NOISE_RMS          = 200
+_SPEECH_THRESHOLD   = 400
+_AMBIENT_CALIBRATED = False
+
+def _calibrate_sounddevice():
+    """
+    Record 2 seconds of silence to measure background noise.
+    Sets _NOISE_RMS and _SPEECH_THRESHOLD.
+    Called exactly ONCE from _main_loop at startup.
+    """
+    global _NOISE_RMS, _SPEECH_THRESHOLD, _AMBIENT_CALIBRATED
+    if _AMBIENT_CALIBRATED or not SOUNDDEVICE_AVAILABLE:
+        return
     try:
-        # Try voice input with sounddevice
-        if SOUNDDEVICE_AVAILABLE:
-            output_text.insert(tk.END, "🎤 Listening... (3 seconds)\n")
-            output_text.see(tk.END)
+        info("Calibrating mic — stay quiet for 2 seconds...")
+        data = sd.rec(int(2.0 * SAMPLE_RATE), samplerate=SAMPLE_RATE,
+                      channels=CHANNELS, dtype=DTYPE)
+        sd.wait()
+        _NOISE_RMS        = max(50, float(np.sqrt(np.mean(data.astype(np.float32) ** 2))))
+        _SPEECH_THRESHOLD = max(200, int(_NOISE_RMS * 4))
+        _AMBIENT_CALIBRATED = True
+        info(f"Calibrated. Noise RMS={_NOISE_RMS:.0f}  Speech threshold={_SPEECH_THRESHOLD}")
+    except Exception as e:
+        warn(f"Calibration failed ({e}) — using defaults.")
+        _NOISE_RMS        = 200
+        _SPEECH_THRESHOLD = 400
+        _AMBIENT_CALIBRATED = True
 
-            # Record for 3 seconds
-            recording = sd.rec(int(3 * 16000), samplerate=16000, channels=1, dtype='int16')
-            sd.wait()
+# ══════════════════════════════════════════════════════════════════════════════
+#  VAD RECORDING — fixed, no silent audio sent to Google
+# ══════════════════════════════════════════════════════════════════════════════
+def _rms(chunk):
+    return float(np.sqrt(np.mean(chunk.astype(np.float32) ** 2)))
 
-            # Convert to speech recognition format
-            audio_data = sr.AudioData(recording.tobytes(), 16000, 2)
-            command = sr.Recognizer().recognize_google(audio_data)
+def _record_until_silence(max_seconds=10):
+    """
+    Phase 1 — wait until mic RMS exceeds _SPEECH_THRESHOLD (real speech).
+    Phase 2 — record until 0.8s consecutive silence OR max_seconds reached.
+    Returns numpy int16 array of ONLY the spoken audio, or None if nothing heard.
 
-            output_text.insert(tk.END, f"🎯 Heard: {command}\n")
-            output_text.see(tk.END)
-            return command.lower()
+    FIX: This function is called correctly — calibration runs separately
+         before this, not inside this function.
+    """
+    if not SOUNDDEVICE_AVAILABLE:
+        return None
+
+    wait_chunks    = int(8 * 1000 / CHUNK_MS)       # wait up to 8s for speech
+    max_chunks     = int(max_seconds * 1000 / CHUNK_MS)
+    silence_needed = int(800 / CHUNK_MS)             # 0.8s silence = done
+
+    frames        = []
+    silent_streak = 0
+    speech_count  = 0
+
+    try:
+        stream = sd.InputStream(samplerate=SAMPLE_RATE, channels=CHANNELS,
+                                dtype=DTYPE, blocksize=CHUNK_SAMPLES)
+        stream.start()
+
+        # ── Phase 1: wait for speech ──────────────────────────────────────
+        for _ in range(wait_chunks):
+            chunk, _ = stream.read(CHUNK_SAMPLES)
+            if _rms(chunk) > _SPEECH_THRESHOLD:
+                frames.append(chunk.copy())
+                speech_count = 1
+                break   # speech detected, move to phase 2
+
+        if speech_count == 0:
+            stream.stop()
+            stream.close()
+            return None   # nothing spoken within wait time
+
+        # ── Phase 2: record until silence ────────────────────────────────
+        for _ in range(max_chunks):
+            chunk, _ = stream.read(CHUNK_SAMPLES)
+            frames.append(chunk.copy())
+            if _rms(chunk) > _SPEECH_THRESHOLD:
+                silent_streak = 0
+                speech_count += 1
+            else:
+                silent_streak += 1
+                if silent_streak >= silence_needed:
+                    break
+
+        stream.stop()
+        stream.close()
+
+        if speech_count < 2:
+            return None   # too short, likely noise
+
+        return np.concatenate(frames, axis=0)
 
     except Exception as e:
-        # Voice failed, show error and use text input
-        output_text.insert(tk.END, f"🎤 Audio failed: {str(e)[:50]}...\n")
-        output_text.insert(tk.END, "✍️ Opening text input dialog...\n")
-        output_text.see(tk.END)
+        try: stream.stop(); stream.close()
+        except Exception: pass
+        err(f"Recording error: {e}")
+        return None
 
-    # Use GUI text input dialog
-    command = gui_text_input()
-    if command:
-        output_text.insert(tk.END, f"✍️ You typed: {command}\n")
-        output_text.see(tk.END)
-        return command.lower()
+# ══════════════════════════════════════════════════════════════════════════════
+#  WAKE WORD — pvporcupine (offline) with strict Google Speech fallback
+# ══════════════════════════════════════════════════════════════════════════════
 
-    return "none"
+# ── CHANGE 1: strict _is_wake_phrase — no false triggers on just "pa" or "hey"
+def _is_wake_phrase(text: str) -> bool:
+    """
+    FIX: Only trigger on actual "hey pa" phrases.
+    Old version triggered on single words like "pa" or "hey" causing
+    false positives constantly. Now requires the full wake phrase.
+    """
+    if not text:
+        return False
+    t = text.lower().strip()
 
-def gui_text_input(prompt="🎤 Voice failed - please type your command:"):
-    """Create a GUI dialog for text input"""
-    dialog = tk.Toplevel(window)
-    dialog.title("Enter Command")
-    dialog.geometry("400x140")
-    dialog.attributes('-topmost', True)
-    dialog.resizable(False, False)
-    dialog.configure(bg='#34495E')
+    # Exact and near-exact matches only — must contain both words
+    strict_wake_words = [
+        "hey pa", "hey p a", "heypa",
+        "okay pa", "ok pa", "hey pee ay",
+        "hay pa", "aye pa", "hey par",
+        "a pa",   "hey pea",
+    ]
+    for w in strict_wake_words:
+        if w in t:
+            return True
 
-    # Center the dialog
-    dialog.update_idletasks()
-    x = (dialog.winfo_screenwidth() // 2) - (400 // 2)
-    y = (dialog.winfo_screenheight() // 2) - (140 // 2)
-    dialog.geometry(f"400x140+{x}+{y}")
+    # Debug print so you can see what was heard during wake scanning
+    # CHANGE 3: added wake word debug print
+    print(f"[Wake scan] Heard: '{text}' — not a wake phrase")
+    return False
 
-    tk.Label(dialog, text=prompt, font=("Arial", 11), fg='white', bg='#34495E').pack(pady=10)
+# ── CHANGE 2: pvporcupine offline wake word engine ────────────────────────────
+_porcupine_handle = None
 
-    entry_var = tk.StringVar()
-    entry = tk.Entry(dialog, textvariable=entry_var, width=40, font=("Arial", 10),
-                    bg='#ECF0F1', fg='#2C3E50', insertbackground='#2C3E50')
-    entry.pack(pady=5)
-    entry.focus()
+def _init_porcupine():
+    """
+    Try to initialise pvporcupine with the built-in 'porcupine' keyword
+    (says "porcupine" to wake). For "hey pa" you need a custom keyword file
+    from https://console.picovoice.ai/ — free account required.
 
+    Falls back to Google Speech wake word scanning if not available.
+    """
+    global _porcupine_handle
+    if not PORCUPINE_AVAILABLE:
+        return False
+    try:
+        # Uses built-in keyword 'porcupine' as demo.
+        # Replace keyword_paths=['/path/to/hey-pa.ppn'] once you have
+        # a custom keyword file from https://console.picovoice.ai/
+        _porcupine_handle = pvporcupine.create(keywords=["porcupine"])
+        info("pvporcupine loaded — say 'porcupine' to wake (or get a custom 'hey pa' keyword).")
+        return True
+    except Exception as e:
+        warn(f"pvporcupine init failed ({e}) — falling back to Google Speech wake word.")
+        _porcupine_handle = None
+        return False
+
+def _porcupine_scan() -> bool:
+    """
+    Listen for one frame using pvporcupine.
+    Returns True if wake word detected, False otherwise.
+    pvporcupine is OFFLINE — no internet needed, near-zero CPU.
+    """
+    if _porcupine_handle is None or not PYAUDIO_AVAILABLE:
+        return False
+    try:
+        pa  = pyaudio.PyAudio()
+        stream = pa.open(
+            rate=_porcupine_handle.sample_rate,
+            channels=1,
+            format=pyaudio.paInt16,
+            input=True,
+            frames_per_buffer=_porcupine_handle.frame_length,
+        )
+        pcm = stream.read(_porcupine_handle.frame_length, exception_on_overflow=False)
+        stream.stop_stream(); stream.close(); pa.terminate()
+
+        import struct
+        pcm_unpacked = struct.unpack_from("h" * _porcupine_handle.frame_length, pcm)
+        result = _porcupine_handle.process(pcm_unpacked)
+        return result >= 0  # >= 0 means wake word detected
+    except Exception:
+        return False
+
+def _google_wake_scan() -> str:
+    """
+    Single wake scan using sounddevice + Google Speech.
+    Returns: 'woke' | 'nothing' | 'no_mic'
+    """
+    if not _mic_available():
+        return "no_mic"
+    if not SR_AVAILABLE:
+        return "no_mic"
+
+    if not SOUNDDEVICE_AVAILABLE:
+        return "no_mic"
+
+    # Short 3s wait for wake word speech
+    wait_chunks    = int(3 * 1000 / CHUNK_MS)
+    silence_needed = int(600 / CHUNK_MS)
+    frames         = []
+    silent_streak  = 0
+    speech_count   = 0
+
+    try:
+        stream = sd.InputStream(samplerate=SAMPLE_RATE, channels=CHANNELS,
+                                dtype=DTYPE, blocksize=CHUNK_SAMPLES)
+        stream.start()
+
+        for _ in range(wait_chunks):
+            chunk, _ = stream.read(CHUNK_SAMPLES)
+            if _rms(chunk) > _SPEECH_THRESHOLD:
+                frames.append(chunk.copy())
+                speech_count = 1
+                break
+
+        if speech_count > 0:
+            for _ in range(int(2 * 1000 / CHUNK_MS)):
+                chunk, _ = stream.read(CHUNK_SAMPLES)
+                frames.append(chunk.copy())
+                if _rms(chunk) > _SPEECH_THRESHOLD:
+                    silent_streak = 0
+                    speech_count += 1
+                else:
+                    silent_streak += 1
+                    if silent_streak >= silence_needed:
+                        break
+
+        stream.stop(); stream.close()
+
+        if speech_count < 2 or not frames:
+            return "nothing"
+
+        audio = sr.AudioData(np.concatenate(frames, axis=0).tobytes(), SAMPLE_RATE, 2)
+        r     = sr.Recognizer()
+        text  = r.recognize_google(audio)
+
+        # CHANGE 3: debug print for wake word heard
+        print(f"[Wake scan] Heard: '{text}'")
+
+        if _is_wake_phrase(text):
+            return "woke"
+        return "nothing"
+
+    except sr.UnknownValueError:
+        return "nothing"
+    except sr.RequestError as e:
+        err(f"Google Speech error: {e}")
+        return "nothing"
+    except Exception as e:
+        try: stream.stop(); stream.close()
+        except Exception: pass
+        return "nothing"
+
+def scan_once() -> str:
+    """
+    Unified wake word scan.
+    Uses pvporcupine (offline) if available, else Google Speech.
+    Returns: 'woke' | 'nothing' | 'no_mic'
+    """
+    # ── pvporcupine path (offline, preferred) ────────────────────────────
+    if _porcupine_handle is not None:
+        detected = _porcupine_scan()
+        if detected:
+            print("[Wake scan] pvporcupine detected wake word!")
+            return "woke"
+        return "nothing"
+
+    # ── Google Speech path (fallback) ────────────────────────────────────
+    return _google_wake_scan()
+
+def _mic_available():
+    return SOUNDDEVICE_AVAILABLE or PYAUDIO_AVAILABLE
+
+# ── VOICE CAPTURE ─────────────────────────────────────────────────────────────
+def capture_voice(duration=6, wake_scan=False):
+    """Capture command audio and return recognised text."""
+    if not SR_AVAILABLE:
+        return None
+    if not _mic_available():
+        return "NO_MIC"
+
+    set_wake_led('scanning' if wake_scan else 'listening')
+
+    if SOUNDDEVICE_AVAILABLE:
+        samples = _record_until_silence(max_seconds=duration + 4)
+        if samples is None:
+            set_wake_led('idle')
+            return None
+        try:
+            audio = sr.AudioData(samples.tobytes(), SAMPLE_RATE, 2)
+            text  = sr.Recognizer().recognize_google(audio)
+            set_wake_led('idle')
+            set_status("Command received", C['mint'])
+            q(_console_write, f"  Heard: {text}\n", "heard")
+            return text.lower()
+        except sr.UnknownValueError:
+            set_wake_led('idle')
+            warn("Could not understand — please speak clearly.")
+            return None
+        except sr.RequestError as e:
+            set_wake_led('idle')
+            err(f"Google Speech API error: {e}")
+            return None
+        except Exception as e:
+            set_wake_led('idle')
+            err(f"Voice error: {e}")
+            return None
+
+    if PYAUDIO_AVAILABLE:
+        try:
+            r = sr.Recognizer()
+            mic = sr.Microphone()
+            with mic as src:
+                r.adjust_for_ambient_noise(src, duration=0.3)
+                audio = r.listen(src, timeout=8, phrase_time_limit=duration + 2)
+            text = r.recognize_google(audio)
+            set_wake_led('idle')
+            set_status("Command received", C['mint'])
+            q(_console_write, f"  Heard: {text}\n", "heard")
+            return text.lower()
+        except (sr.WaitTimeoutError, sr.UnknownValueError):
+            set_wake_led('idle'); return None
+        except sr.RequestError as e:
+            set_wake_led('idle'); err(f"Google Speech error: {e}"); return None
+        except Exception as e:
+            set_wake_led('idle'); err(f"Voice error: {e}"); return None
+
+    set_wake_led('idle')
+    return "NO_MIC"
+
+# ── POPUP INPUT ───────────────────────────────────────────────────────────────
+def ask_text(prompt, title="PA Input"):
     result = [None]
-
-    def on_submit():
-        result[0] = entry_var.get().strip()
-        dialog.destroy()
-
-    def on_cancel():
-        result[0] = None
-        dialog.destroy()
-
-    # Bind Enter key to submit
-    entry.bind('<Return>', lambda e: on_submit())
-
-    button_frame = tk.Frame(dialog, bg='#34495E')
-    button_frame.pack(pady=10)
-
-    tk.Button(button_frame, text="Submit", command=on_submit, width=10, bg='#27AE60', fg='white').pack(side=tk.LEFT, padx=5)
-    tk.Button(button_frame, text="Cancel", command=on_cancel, width=10, bg='#E74C3C', fg='white').pack(side=tk.RIGHT, padx=5)
-
-    # Wait for dialog
-    window.wait_window(dialog)
-
+    ev = threading.Event()
+    def _build():
+        dlg = tk.Toplevel(ROOT)
+        dlg.title(title); dlg.geometry("500x170")
+        dlg.configure(bg=C['bg1']); dlg.attributes('-topmost', True)
+        dlg.grab_set(); dlg.resizable(False, False)
+        dlg.update_idletasks()
+        x = (dlg.winfo_screenwidth()  - 500) // 2
+        y = (dlg.winfo_screenheight() - 170) // 2
+        dlg.geometry(f"500x170+{x}+{y}")
+        tk.Label(dlg, text=prompt, font=("Helvetica Neue",11,"bold"),
+                 fg=C['teal'], bg=C['bg1']).pack(pady=(16,6), padx=20, anchor='w')
+        evar = tk.StringVar()
+        ent = tk.Entry(dlg, textvariable=evar, width=52, font=FNT_MONO,
+                       bg=C['bg2'], fg=C['txt0'], insertbackground=C['gold'],
+                       relief='flat', bd=6, highlightthickness=1,
+                       highlightcolor=C['teal'], highlightbackground=C['border'])
+        ent.pack(padx=20, fill='x'); ent.focus()
+        def submit(): result[0]=evar.get().strip(); dlg.destroy(); ev.set()
+        def cancel(): dlg.destroy(); ev.set()
+        ent.bind('<Return>', lambda _: submit())
+        dlg.protocol("WM_DELETE_WINDOW", cancel)
+        bf = tk.Frame(dlg, bg=C['bg1']); bf.pack(pady=12)
+        _mk_btn(bf,"OK",    submit,C['teal'], C['bg0'],w=10).pack(side=tk.LEFT,padx=6)
+        _mk_btn(bf,"Cancel",cancel,C['coral'],C['bg0'],w=10).pack(side=tk.LEFT,padx=6)
+    ROOT.after(0, _build); ev.wait(60)
     return result[0]
 
-# Time
-def tell_time():
-    time = datetime.datetime.now().strftime("%H:%M")
-    speak("The current time is " + time)
+# ── FEATURES ──────────────────────────────────────────────────────────────────
+def feat_time():
+    speak(f"The time is {datetime.datetime.now().strftime('%I:%M %p')}")
 
-# Date
-def tell_date():
-    today = datetime.date.today()
-    speak("Today's date is " + str(today))
+def feat_date():
+    speak(f"Today is {datetime.datetime.now().strftime('%A, %B %d, %Y')}")
 
-# Wikipedia
-def search_wikipedia(command):
+def feat_datetime():
+    now = datetime.datetime.now()
+    speak(f"It is {now.strftime('%A, %B %d, %Y')} at {now.strftime('%I:%M %p')}")
 
-    speak("Searching Wikipedia")
+SITES = {
+    "youtube":("YouTube","https://www.youtube.com"),
+    "linkedin":("LinkedIn","https://www.linkedin.com"),
+    "github":("GitHub","https://github.com"),
+    "gmail":("Gmail","https://mail.google.com"),
+    "email":("Gmail","https://mail.google.com"),
+    "google":("Google","https://www.google.com"),
+    "stackoverflow":("Stack Overflow","https://stackoverflow.com"),
+    "twitter":("Twitter","https://twitter.com"),
+    "reddit":("Reddit","https://www.reddit.com"),
+    "amazon":("Amazon","https://www.amazon.in"),
+    "netflix":("Netflix","https://www.netflix.com"),
+    "wikipedia":("Wikipedia","https://www.wikipedia.org"),
+    "maps":("Google Maps","https://maps.google.com"),
+    "drive":("Google Drive","https://drive.google.com"),
+    "meet":("Google Meet","https://meet.google.com"),
+    "docs":("Google Docs","https://docs.google.com"),
+    "sheets":("Google Sheets","https://sheets.google.com"),
+    "instagram":("Instagram","https://www.instagram.com"),
+    "whatsapp":("WhatsApp Web","https://web.whatsapp.com"),
+    "spotify":("Spotify","https://open.spotify.com"),
+    "discord":("Discord","https://discord.com/app"),
+    "notion":("Notion","https://www.notion.so"),
+    "chatgpt":("ChatGPT","https://chat.openai.com"),
+    "gemini":("Gemini","https://gemini.google.com"),
+}
 
-    command = command.replace("wikipedia", "")
+def feat_open_site(cmd):
+    clean = re.sub(r'\bopen\b','',cmd,flags=re.IGNORECASE).strip()
+    for key,(name,url) in SITES.items():
+        if key in clean or key in cmd:
+            speak(f"Opening {name}!"); webbrowser.open(url); return
+    m = re.search(r'open\s+([\w]+)',cmd)
+    if m: speak(f"Opening {m.group(1)}."); webbrowser.open(f"https://www.{m.group(1)}.com")
+    else: speak("Which website would you like me to open?")
 
-    try:
-        result = wikipedia.summary(command, sentences=2)
-        speak(result)
-    except:
-        speak("Sorry I couldn't find information")
+def feat_google_search(cmd):
+    qs = re.sub(r'\b(search|google|look up|find)\b','',cmd,flags=re.IGNORECASE).strip()
+    if not qs: qs = ask_text("What should I search for?")
+    if qs:
+        speak(f"Searching Google for {qs}.")
+        webbrowser.open(f"https://www.google.com/search?q={qs.replace(' ','+')}")
 
-# Google Search
-def google_search(command):
+def feat_youtube_search(cmd):
+    qs = re.sub(r'\b(youtube|play|search|find|watch|open)\b','',cmd,flags=re.IGNORECASE).strip()
+    if not qs: qs = ask_text("What to search on YouTube?")
+    if qs:
+        speak(f"Searching YouTube for {qs}.")
+        webbrowser.open(f"https://www.youtube.com/results?search_query={qs.replace(' ','+')}")
 
-    speak("Searching Google")
-
-    command = command.replace("search", "")
-
-    webbrowser.open("https://www.google.com/search?q=" + command)
-
-# Open Websites
-def open_website(command):
-
-    if "youtube" in command:
-        speak("Opening YouTube")
-        webbrowser.open("https://youtube.com")
-
-    elif "google" in command:
-        speak("Opening Google")
-        webbrowser.open("https://google.com")
-
-    elif "gmail" in command:
-        speak("Opening Gmail")
-        webbrowser.open("https://mail.google.com")
-
-# Play Video
-def play_video(command):
-
-    command = command.replace("play", "")
-    speak("Playing " + command)
-
-    pywhatkit.playonyt(command)
-
-# Tell Joke
-def tell_joke():
-
-    joke = pyjokes.get_joke()
-    speak(joke)
-
-# Weather
-def weather():
-
-    city = "Hyderabad"
-    api = "https://api.openweathermap.org/data/2.5/weather?q="+city+"&appid=YOUR_API_KEY"
-
-    try:
-        data = requests.get(api).json()
-
-        temp = int(data["main"]["temp"] - 273)
-
-        speak("Current temperature is " + str(temp) + " degree celsius")
-
-    except:
-        speak("Weather information not available")
-
-# Open Applications
-def open_app(command):
-
-    if "notepad" in command:
-        os.system("notepad")
-
-    elif "calculator" in command:
-        os.system("calc")
-
-    elif "chrome" in command:
+def feat_open_chrome():
+    speak("Opening Chrome.")
+    if IS_WINDOWS:
+        for p in [r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+                  r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe"]:
+            if os.path.exists(p): subprocess.Popen([p]); return
         os.system("start chrome")
+    elif IS_MAC: subprocess.Popen(["open","-a","Google Chrome"])
+    elif IS_LINUX: subprocess.Popen(["google-chrome"])
 
-# Shutdown
-def shutdown():
+def feat_open_email():
+    speak("Opening Gmail."); webbrowser.open("https://mail.google.com")
 
-    speak("Shutting down the computer")
-    os.system("shutdown /s /t 1")
-
-# Restart
-def restart():
-
-    speak("Restarting the computer")
-    os.system("shutdown /r /t 1")
-
-# System Information
-def system_info():
-    """Get system information"""
+def feat_calculate(cmd):
+    expr = re.sub(r'\b(calculate|compute|what is|whats|evaluate|solve)\b','',cmd,flags=re.IGNORECASE).strip()
+    expr = (expr.replace("plus","+").replace("minus","-").replace("times","*")
+               .replace("multiplied by","*").replace("divided by","/")
+               .replace("mod","%").replace("power","**").replace("^","**")
+               .replace("square root of","math.sqrt(").strip())
+    if "math.sqrt(" in expr and not expr.endswith(")"): expr += ")"
+    if not expr: speak("Please give me a math expression."); return
+    if re.search(r'[a-zA-Z]',expr.replace("math","").replace("sqrt","")): speak("Numeric only."); return
     try:
-        cpu_percent = psutil.cpu_percent(interval=1)
-        memory = psutil.virtual_memory()
-        disk = psutil.disk_usage('/')
+        res = eval(expr,{"__builtins__":{},"math":math})
+        if isinstance(res,float) and res==int(res): res=int(res)
+        speak(f"The result is {res}"); info(f"{expr} = {res}")
+    except ZeroDivisionError: speak("Cannot divide by zero.")
+    except Exception: speak("Couldn't evaluate that.")
 
-        info = f"CPU Usage: {cpu_percent}%. Memory: {memory.percent}%. Disk: {disk.percent}%."
-        speak(info)
-    except:
-        speak("Unable to retrieve system information")
+def feat_screenshot():
+    if not PYAUTOGUI_AVAILABLE: speak("Run: pip install pyautogui"); return
+    fname = f"screenshot_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+    try: pyautogui.screenshot().save(fname); speak(f"Screenshot saved as {fname}.")
+    except Exception as e: speak(f"Screenshot failed: {e}")
 
-# Battery Status
-def battery_status():
-    """Get battery information"""
+def feat_system_info():
+    if not PSUTIL_AVAILABLE: speak("Run: pip install psutil"); return
+    cpu=psutil.cpu_percent(interval=1); mem=psutil.virtual_memory()
+    disk=psutil.disk_usage('/'); cores=psutil.cpu_count(logical=True)
+    speak(f"CPU at {cpu}% across {cores} cores. RAM {mem.percent}% used. Disk {disk.percent}% used.")
+
+def feat_battery():
+    if not PSUTIL_AVAILABLE: speak("Run: pip install psutil"); return
+    b=psutil.sensors_battery()
+    if b:
+        st="charging" if b.power_plugged else "discharging"
+        mins=int(b.secsleft/60) if b.secsleft!=psutil.POWER_TIME_UNLIMITED else -1
+        speak(f"Battery at {b.percent:.0f}%, {st}" + (f", {mins} minutes remaining." if mins>0 else "."))
+    else: speak("No battery — desktop system.")
+
+def feat_cpu():
+    if not PSUTIL_AVAILABLE: speak("Run: pip install psutil"); return
+    speak(f"CPU at {psutil.cpu_percent(interval=0.5)}%, {psutil.cpu_freq().current:.0f} MHz.")
+
+def feat_ram():
+    if not PSUTIL_AVAILABLE: speak("Run: pip install psutil"); return
+    m=psutil.virtual_memory()
+    speak(f"RAM: {m.used//1024**2} MB used of {m.total//1024**2} MB. {m.percent}% used.")
+
+def feat_disk():
+    if not PSUTIL_AVAILABLE: speak("Run: pip install psutil"); return
+    d=psutil.disk_usage('/')
+    speak(f"Disk: {d.used//1024**3:.1f} GB used of {d.total//1024**3:.1f} GB. {d.percent}% full.")
+
+def feat_processes():
+    if not PSUTIL_AVAILABLE: speak("Run: pip install psutil"); return
+    procs=sorted(psutil.process_iter(['pid','name','cpu_percent']),
+                 key=lambda p:p.info['cpu_percent'] or 0,reverse=True)[:5]
+    speak("Top 5 CPU processes:")
+    for p in procs: info(f"  PID {p.info['pid']:5d}  {p.info['cpu_percent']:5.1f}%  {p.info['name']}")
+
+def feat_network():
+    try: host=socket.gethostname(); speak(f"Hostname: {host}, IP: {socket.gethostbyname(host)}")
+    except Exception as e: speak(f"Network error: {e}")
+
+def feat_public_ip():
+    if not REQUESTS_AVAILABLE: speak("Run: pip install requests"); return
+    try: speak(f"Your public IP is {requests.get('https://api.ipify.org?format=json',timeout=6).json()['ip']}")
+    except Exception: speak("Could not fetch public IP.")
+
+def feat_ping():
+    if not REQUESTS_AVAILABLE: speak("Run: pip install requests"); return
     try:
-        battery = psutil.sensors_battery()
-        if battery:
-            percent = battery.percent
-            plugged = "plugged in" if battery.power_plugged else "not plugged in"
-            speak(f"Battery is at {percent} percent and {plugged}")
-        else:
-            speak("No battery detected")
-    except:
-        speak("Unable to check battery status")
+        t0=time.perf_counter(); requests.get("https://www.google.com",timeout=5)
+        speak(f"Ping to Google: {int((time.perf_counter()-t0)*1000)} ms")
+    except Exception: speak("Ping failed.")
 
-# Network Information
-def network_info():
-    """Get network information"""
-    try:
-        hostname = socket.gethostname()
-        ip_address = socket.gethostbyname(hostname)
-        speak(f"Your computer name is {hostname} and IP address is {ip_address}")
-    except:
-        speak("Unable to retrieve network information")
+def feat_lock():
+    speak("Locking screen."); time.sleep(1)
+    if IS_WINDOWS: os.system("rundll32.exe user32.dll,LockWorkStation")
+    elif IS_LINUX:
+        for c in ["gnome-screensaver-command -l","xdg-screensaver lock","loginctl lock-session"]:
+            if os.system(f"{c} 2>/dev/null")==0: break
+    elif IS_MAC: os.system(r'/System/Library/CoreServices/Menu\ Extras/User.menu/Contents/Resources/CGSession -suspend')
 
-# Calculator
-def calculate(command):
-    """Simple calculator function"""
-    try:
-        # Remove calculator keywords
-        expression = command.replace("calculate", "").replace("compute", "").replace("what is", "").strip()
+def feat_sleep():
+    speak("Going to sleep."); time.sleep(2)
+    if IS_WINDOWS: os.system("rundll32.exe powrprof.dll,SetSuspendState 0,1,0")
+    elif IS_LINUX: os.system("systemctl suspend")
+    elif IS_MAC: os.system("pmset sleepnow")
 
-        # Basic safety check
-        if any(char in expression for char in ['import', 'exec', 'eval', '__']):
-            speak("Sorry, I cannot execute that calculation for security reasons")
+def feat_shutdown():
+    def _c():
+        if msgbox.askyesno("Shutdown","Shut down now?",parent=ROOT):
+            speak("Shutting down in 5 seconds.")
+            def _d():
+                time.sleep(5)
+                if IS_WINDOWS: os.system("shutdown /s /t 1")
+                elif IS_LINUX: os.system("shutdown -h now")
+                elif IS_MAC: os.system("sudo shutdown -h now")
+            threading.Thread(target=_d,daemon=True).start()
+        else: speak("Shutdown cancelled.")
+    ROOT.after(0,_c)
+
+def feat_restart():
+    def _c():
+        if msgbox.askyesno("Restart","Restart now?",parent=ROOT):
+            speak("Restarting in 5 seconds.")
+            def _d():
+                time.sleep(5)
+                if IS_WINDOWS: os.system("shutdown /r /t 1")
+                elif IS_LINUX: os.system("reboot")
+                elif IS_MAC: os.system("sudo shutdown -r now")
+            threading.Thread(target=_d,daemon=True).start()
+        else: speak("Restart cancelled.")
+    ROOT.after(0,_c)
+
+def feat_logout():
+    speak("Logging out."); time.sleep(1)
+    if IS_WINDOWS: os.system("shutdown /l")
+    elif IS_LINUX: os.system("pkill -KILL -u $USER")
+    elif IS_MAC: os.system("osascript -e 'tell app \"System Events\" to log out'")
+
+APP_MAP_WIN = {
+    "notepad":"notepad","calculator":"calc","paint":"mspaint","explorer":"explorer",
+    "task manager":"taskmgr","cmd":"start cmd","powershell":"start powershell",
+    "word":"start winword","excel":"start excel","powerpoint":"start powerpnt",
+    "vs code":"code","vscode":"code","spotify":"start spotify",
+    "edge":"start msedge","firefox":"start firefox",
+}
+APP_MAP_LINUX = {
+    "terminal":"x-terminal-emulator","files":"nautilus","gedit":"gedit",
+    "calculator":"gnome-calculator","vs code":"code","vscode":"code",
+    "firefox":"firefox","chrome":"google-chrome","vlc":"vlc","gimp":"gimp",
+}
+
+def feat_open_app(cmd):
+    amap = APP_MAP_WIN if IS_WINDOWS else APP_MAP_LINUX
+    for key,exe in amap.items():
+        if key in cmd:
+            speak(f"Opening {key}.")
+            try:
+                if IS_WINDOWS: os.system(exe)
+                else: subprocess.Popen(exe.split())
+            except Exception as e: err(f"Could not open {key}: {e}")
             return
+    speak("App not found. Try: open notepad or open calculator.")
 
-        result = eval(expression)
-        speak(f"The result of {expression} is {result}")
-    except:
-        speak("Sorry, I couldn't calculate that. Please try a simple mathematical expression")
-
-# Screenshot
-def take_screenshot():
-    """Take a screenshot"""
+def feat_wikipedia(cmd):
+    if not WIKI_AVAILABLE: speak("Run: pip install wikipedia"); return
+    query=re.sub(r'\b(wikipedia|wiki|search|tell me about|who is|what is)\b','',cmd,flags=re.IGNORECASE).strip()
+    if not query: query=ask_text("What to look up?")
+    if not query: return
+    speak(f"Looking up {query}.")
     try:
-        import pyautogui
-        screenshot = pyautogui.screenshot()
-        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"screenshot_{timestamp}.png"
-        screenshot.save(filename)
-        speak(f"Screenshot saved as {filename}")
-    except ImportError:
-        speak("Screenshot feature requires pyautogui. Please install it to use this feature")
-    except:
-        speak("Unable to take screenshot")
+        wikipedia.set_lang("en")
+        speak(wikipedia.summary(query,sentences=3,auto_suggest=False))
+    except wikipedia.exceptions.DisambiguationError as e:
+        speak(f"Too many results. Options: {', '.join(e.options[:3])}")
+    except wikipedia.exceptions.PageError:
+        try: speak(wikipedia.summary(query,sentences=3,auto_suggest=True))
+        except Exception: speak(f"Couldn't find {query}.")
+    except Exception as e: speak(f"Wikipedia error: {e}")
 
-# Volume Control
-def volume_control(command):
-    """Control system volume"""
+def feat_define(cmd):
+    word=re.sub(r'\b(define|definition|meaning of|what does|mean|dictionary)\b','',cmd,flags=re.IGNORECASE).strip()
+    if not word: word=ask_text("Which word to define?")
+    if not word: return
+    if not REQUESTS_AVAILABLE: speak("Run: pip install requests"); return
     try:
-        from ctypes import cast, POINTER
+        r=requests.get(f"https://api.dictionaryapi.dev/api/v2/entries/en/{word}",timeout=6)
+        if r.status_code==200: speak(f"{word}: {r.json()[0]['meanings'][0]['definitions'][0]['definition']}")
+        else: speak(f"No definition found for {word}.")
+    except Exception: speak("Dictionary unavailable.")
+
+def feat_weather(cmd=""):
+    key=os.environ.get("OPENWEATHER_API_KEY","")
+    if not key: speak("Needs OPENWEATHER_API_KEY env variable."); return
+    city="Hyderabad"
+    m=re.search(r'in\s+([A-Za-z ]+)$',cmd)
+    if m: city=m.group(1).strip()
+    try:
+        d=requests.get(f"https://api.openweathermap.org/data/2.5/weather?q={city}&appid={key}&units=metric",timeout=6).json()
+        if d.get("cod")!=404:
+            speak(f"{city}: {d['main']['temp']:.1f}°C, {d['weather'][0]['description']}, feels like {d['main']['feels_like']:.1f}°C, humidity {d['main']['humidity']}%.")
+        else: speak(f"City {city} not found.")
+    except Exception: speak("Weather unavailable.")
+
+def feat_news():
+    key=os.environ.get("NEWS_API_KEY","")
+    if not key: speak("Needs NEWS_API_KEY env variable."); return
+    try:
+        d=requests.get(f"https://newsapi.org/v2/top-headlines?country=in&apiKey={key}",timeout=6).json()
+        if d.get("status")=="ok":
+            speak("Top 3 headlines:")
+            for i,a in enumerate(d.get("articles",[])[:3],1): speak(f"{i}: {a.get('title','No title')}")
+        else: speak("Could not fetch news.")
+    except Exception: speak("News unavailable.")
+
+def feat_joke():
+    if JOKES_AVAILABLE:
+        try: speak(pyjokes.get_joke()); return
+        except Exception: pass
+    speak(random.choice([
+        "Why do programmers prefer dark mode? Because light attracts bugs!",
+        "How many programmers to change a light bulb? None, that's a hardware problem.",
+        "A SQL query walks into a bar and asks two tables: can I join you?",
+        "Why did the developer go broke? He used up all his cache.",
+        "I told my computer I needed a break. Now it keeps sending me Kit-Kat ads.",
+    ]))
+
+def feat_quote():
+    if REQUESTS_AVAILABLE:
+        try:
+            r=requests.get("https://zenquotes.io/api/random",timeout=6)
+            if r.status_code==200: d=r.json()[0]; speak(f"{d['q']} — {d['a']}"); return
+        except Exception: pass
+    speak(random.choice([
+        "The only way to do great work is to love what you do. — Steve Jobs",
+        "In the middle of difficulty lies opportunity. — Albert Einstein",
+        "It does not matter how slowly you go as long as you do not stop. — Confucius",
+        "Code is like humour. When you have to explain it, it is bad. — Cory House",
+    ]))
+
+def feat_timer(cmd):
+    m=re.search(r'(\d+)\s*(hour|hours|minute|minutes|second|seconds)',cmd)
+    if not m:
+        val=ask_text("Duration (e.g. 5 minutes):")
+        if not val: return
+        m=re.search(r'(\d+)\s*(hour|hours|minute|minutes|second|seconds)',val)
+    if not m: speak("Specify a duration like 5 minutes."); return
+    amount=int(m.group(1)); unit=m.group(2)
+    secs=amount*3600 if 'hour' in unit else amount*60 if 'minute' in unit else amount
+    speak(f"Timer set for {amount} {unit}.")
+    def _r(): time.sleep(secs); speak(f"Timer done! {amount} {unit} passed.")
+    threading.Thread(target=_r,daemon=True).start()
+
+def feat_alarm(cmd):
+    m=re.search(r'(\d{1,2})[:\s]?(\d{2})?\s*(am|pm)?',cmd,re.IGNORECASE)
+    if not m:
+        val=ask_text("Alarm time (e.g. 7 30 am):")
+        if not val: return
+        m=re.search(r'(\d{1,2})[:\s]?(\d{2})?\s*(am|pm)?',val,re.IGNORECASE)
+    if not m: speak("Couldn't parse that time."); return
+    hour=int(m.group(1)); minute=int(m.group(2) or 0); mer=(m.group(3) or '').lower()
+    if mer=='pm' and hour!=12: hour+=12
+    elif mer=='am' and hour==12: hour=0
+    target=datetime.datetime.now().replace(hour=hour,minute=minute,second=0,microsecond=0)
+    if target<=datetime.datetime.now(): target+=datetime.timedelta(days=1)
+    speak(f"Alarm set for {target.strftime('%I:%M %p')}.")
+    def _r(): time.sleep((target-datetime.datetime.now()).total_seconds()); speak(f"Alarm! It is {target.strftime('%I:%M %p')}!")
+    threading.Thread(target=_r,daemon=True).start()
+
+def feat_note():
+    def _b():
+        dlg=tk.Toplevel(ROOT); dlg.title("Quick Note"); dlg.geometry("520x340")
+        dlg.configure(bg=C['bg1']); dlg.attributes('-topmost',True); dlg.grab_set()
+        dlg.resizable(False,False); dlg.update_idletasks()
+        x=(dlg.winfo_screenwidth()-520)//2; y=(dlg.winfo_screenheight()-340)//2
+        dlg.geometry(f"520x340+{x}+{y}")
+        tk.Label(dlg,text="Quick Note",font=("Helvetica Neue",13,"bold"),
+                 fg=C['gold'],bg=C['bg1']).pack(pady=(14,6),anchor='w',padx=18)
+        txt=tk.Text(dlg,height=10,width=58,font=FNT_MONO,bg=C['bg2'],fg=C['txt0'],
+                    insertbackground=C['gold'],relief='flat',bd=4,padx=8,pady=6)
+        txt.pack(padx=18,fill='both',expand=True); txt.focus()
+        def save():
+            content=txt.get("1.0",tk.END).strip()
+            if content:
+                fname=f"note_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+                with open(fname,'w',encoding='utf-8') as f: f.write(content)
+                speak(f"Note saved as {fname}")
+            dlg.destroy()
+        bf=tk.Frame(dlg,bg=C['bg1']); bf.pack(pady=10)
+        _mk_btn(bf,"Save",save,C['gold'],C['bg0'],w=12).pack(side=tk.LEFT,padx=8)
+        _mk_btn(bf,"Cancel",dlg.destroy,C['coral'],C['bg0'],w=12).pack(side=tk.LEFT,padx=8)
+    ROOT.after(0,_b)
+
+def feat_clipboard():
+    try: c=ROOT.clipboard_get(); speak(f"Clipboard: {c[:100]}")
+    except Exception: speak("Clipboard is empty.")
+
+def feat_coin(): speak(f"Coin flip: {random.choice(['Heads','Tails'])}!")
+
+def feat_dice(cmd):
+    m=re.search(r'(\d+)',cmd); sides=max(2,int(m.group(1)) if m else 6)
+    speak(f"Rolling a {sides}-sided die... you got {random.randint(1,sides)}!")
+
+def feat_translate(cmd):
+    text=re.sub(r'\b(translate|translation)\b','',cmd,flags=re.IGNORECASE).strip()
+    speak("Opening Google Translate.")
+    webbrowser.open(f"https://translate.google.com/?text={text}" if text else "https://translate.google.com")
+
+def feat_list_files():
+    items=os.listdir('.')
+    files=[f for f in items if os.path.isfile(f)]; dirs=[f for f in items if os.path.isdir(f)]
+    speak(f"{len(files)} files, {len(dirs)} folders.")
+    info("Files: "+", ".join(files[:8])); info("Folders: "+", ".join(dirs[:6]))
+
+def feat_volume(cmd):
+    if not IS_WINDOWS: speak("Volume control is Windows only."); return
+    try:
+        from ctypes import cast,POINTER
         from comtypes import CLSCTX_ALL
-        from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
+        from pycaw.pycaw import AudioUtilities,IAudioEndpointVolume
+        devices=AudioUtilities.GetSpeakers()
+        vol_ctrl=cast(devices.Activate(IAudioEndpointVolume._iid_,CLSCTX_ALL,None),POINTER(IAudioEndpointVolume))
+        if "up" in cmd or "louder" in cmd:
+            v=min(1.0,vol_ctrl.GetMasterVolumeLevelScalar()+0.1); vol_ctrl.SetMasterVolumeLevelScalar(v,None); speak(f"Volume: {int(v*100)}%.")
+        elif "down" in cmd or "quieter" in cmd:
+            v=max(0.0,vol_ctrl.GetMasterVolumeLevelScalar()-0.1); vol_ctrl.SetMasterVolumeLevelScalar(v,None); speak(f"Volume: {int(v*100)}%.")
+        elif "mute"   in cmd: vol_ctrl.SetMute(1,None); speak("Muted.")
+        elif "unmute" in cmd: vol_ctrl.SetMute(0,None); speak("Unmuted.")
+        else: speak(f"Volume is {int(vol_ctrl.GetMasterVolumeLevelScalar()*100)}%.")
+    except ImportError: speak("Run: pip install pycaw")
+    except Exception as e: speak(f"Volume error: {e}")
 
-        devices = AudioUtilities.GetSpeakers()
-        interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
-        volume = cast(interface, POINTER(IAudioEndpointVolume))
+def feat_help():
+    q(_console_write,"""
+PA COMMANDS
+====================================================
+WAKE        : say "hey pa" → PA says "Yes?" → speak
+             (if pvporcupine installed, say "porcupine")
+TIME / DATE : what time is it / what is the date
+OPEN SITES  : open youtube / gmail / github / reddit
+SEARCH      : search python tutorials
+YOUTUBE     : youtube lo-fi music
+WIKIPEDIA   : wikipedia Elon Musk
+DICTIONARY  : define serendipity
+CALCULATOR  : calculate 25 times 4
+SCREENSHOT  : take a screenshot
+SYSTEM INFO : system info / cpu / ram / disk / battery
+NETWORK     : network info / my ip / ping
+LOCK/SLEEP  : lock screen / sleep
+SHUTDOWN    : shutdown / restart / log out
+APPS        : open notepad / calculator / vscode
+VOLUME      : volume up / down / mute / unmute
+TIMER       : set timer for 10 minutes
+ALARM       : set alarm for 7 30 am
+NOTE        : create note
+CLIPBOARD   : clipboard
+JOKE        : tell me a joke
+QUOTE       : give me a quote
+COIN / DICE : flip a coin / roll a dice
+TRANSLATE   : translate hello world
+FILES       : list files
+EXIT        : goodbye / exit / quit
+====================================================
+""","info")
+    speak("Commands shown in the console.")
 
-        if "up" in command or "increase" in command:
-            current_volume = volume.GetMasterVolumeLevelScalar()
-            volume.SetMasterVolumeLevelScalar(min(1.0, current_volume + 0.1), None)
-            speak("Volume increased")
-        elif "down" in command or "decrease" in command:
-            current_volume = volume.GetMasterVolumeLevelScalar()
-            volume.SetMasterVolumeLevelScalar(max(0.0, current_volume - 0.1), None)
-            speak("Volume decreased")
-        elif "mute" in command:
-            volume.SetMute(1, None)
-            speak("Volume muted")
-        elif "unmute" in command:
-            volume.SetMute(0, None)
-            speak("Volume unmuted")
-        else:
-            current_volume = int(volume.GetMasterVolumeLevelScalar() * 100)
-            speak(f"Current volume is {current_volume} percent")
-
-    except ImportError:
-        speak("Volume control requires pycaw. Please install it to use this feature")
-    except:
-        speak("Unable to control volume")
-
-# News Headlines
-def get_news():
-    """Get top news headlines"""
-    try:
-        # Using NewsAPI (you'll need to get a free API key from newsapi.org)
-        api_key = "YOUR_NEWS_API_KEY"  # Replace with actual API key
-        url = f"https://newsapi.org/v2/top-headlines?country=us&apiKey={api_key}"
-
-        response = requests.get(url)
-        data = response.json()
-
-        if data.get("status") == "ok":
-            articles = data.get("articles", [])[:3]  # Get top 3 headlines
-            speak("Here are the top news headlines:")
-            for i, article in enumerate(articles, 1):
-                title = article.get("title", "No title")
-                speak(f"News {i}: {title}")
-        else:
-            speak("Unable to fetch news at the moment")
-    except:
-        speak("News service is not available. Please check your internet connection")
-
-# Dictionary
-def dictionary(command):
-    """Get definition of a word"""
-    try:
-        word = command.replace("define", "").replace("definition", "").replace("meaning", "").strip()
-
-        if not word:
-            speak("Please specify a word to define")
-            return
-
-        # Using a free dictionary API
-        url = f"https://api.dictionaryapi.dev/api/v2/entries/en/{word}"
-        response = requests.get(url)
-
-        if response.status_code == 200:
-            data = response.json()
-            if data and len(data) > 0:
-                definition = data[0]["meanings"][0]["definitions"][0]["definition"]
-                speak(f"The definition of {word} is: {definition}")
-            else:
-                speak(f"Sorry, I couldn't find the definition of {word}")
-        else:
-            speak(f"Sorry, I couldn't find the definition of {word}")
-    except:
-        speak("Dictionary service is not available")
-
-# Timer
-def set_timer(command):
-    """Set a timer"""
-    try:
-        # Extract time from command (e.g., "set timer for 5 minutes")
-        import re
-        time_match = re.search(r'(\d+)\s*(minute|minutes|second|seconds|hour|hours)', command)
-
-        if time_match:
-            amount = int(time_match.group(1))
-            unit = time_match.group(2)
-
-            # Convert to seconds
-            if 'hour' in unit:
-                seconds = amount * 3600
-            elif 'minute' in unit:
-                seconds = amount * 60
-            else:  # seconds
-                seconds = amount
-
-            speak(f"Setting timer for {amount} {unit}")
-
-            def timer_thread():
-                time.sleep(seconds)
-                # Play beep sound multiple times
-                for _ in range(3):
-                    winsound.Beep(1000, 500)
-                    time.sleep(0.5)
-                speak(f"Timer finished! {amount} {unit} have passed")
-
-            threading.Thread(target=timer_thread, daemon=True).start()
-        else:
-            speak("Please specify timer duration like 'set timer for 5 minutes'")
-    except:
-        speak("Unable to set timer")
-
-# Lock Screen
-def lock_screen():
-    """Lock the computer screen"""
-    try:
-        if platform.system() == "Windows":
-            os.system("rundll32.exe user32.dll,LockWorkStation")
-            speak("Screen locked")
-        else:
-            speak("Screen lock is only available on Windows")
-    except:
-        speak("Unable to lock screen")
-
-# Empty Recycle Bin
-def empty_recycle_bin():
-    """Empty the recycle bin"""
-    try:
-        if platform.system() == "Windows":
-            # Use Windows API to empty recycle bin
-            import ctypes
-            result = ctypes.windll.shell32.SHEmptyRecycleBinW(None, None, 1)
-            if result == 0:
-                speak("Recycle bin emptied successfully")
-            else:
-                speak("Unable to empty recycle bin")
-        else:
-            speak("Recycle bin management is only available on Windows")
-    except:
-        speak("Unable to empty recycle bin")
-
-# File Operations
-def list_files():
-    """List files in current directory"""
-    try:
-        files = os.listdir('.')
-        file_count = len([f for f in files if os.path.isfile(f)])
-        dir_count = len([f for f in files if os.path.isdir(f)])
-
-        speak(f"Current directory has {file_count} files and {dir_count} folders")
-        if len(files) <= 10:
-            speak("Files and folders: " + ", ".join(files[:10]))
-        else:
-            speak("Too many files to list. Use 'list files in [folder]' for specific directories")
-    except:
-        speak("Unable to list files")
-
-# Create Note/Reminder
-def create_note():
-    """Create a simple note"""
-    try:
-        dialog = tk.Toplevel(window)
-        dialog.title("Create Note")
-        dialog.geometry("400x200")
-        dialog.attributes('-topmost', True)
-
-        tk.Label(dialog, text="Enter your note:", font=("Arial", 12)).pack(pady=10)
-
-        text_area = tk.Text(dialog, height=6, width=40)
-        text_area.pack(pady=5)
-
-        def save_note():
-            note_content = text_area.get("1.0", tk.END).strip()
-            if note_content:
-                timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-                filename = f"note_{timestamp}.txt"
-                with open(filename, 'w') as f:
-                    f.write(note_content)
-                speak(f"Note saved as {filename}")
-            dialog.destroy()
-
-        tk.Button(dialog, text="Save Note", command=save_note).pack(pady=10)
-        tk.Button(dialog, text="Cancel", command=dialog.destroy).pack()
-
-    except:
-        speak("Unable to create note")
-
-# Command processor
-def process_command(command):
-
-    if "time" in command:
-        tell_time()
-
-    elif "date" in command:
-        tell_date()
-
-    elif "wikipedia" in command:
-        search_wikipedia(command)
-
-    elif "search" in command and "google" not in command:
-        google_search(command)
-
-    elif "open youtube" in command or "open google" in command or "open gmail" in command:
-        open_website(command)
-
-    elif "play" in command and "video" not in command:
-        play_video(command)
-
-    elif "joke" in command:
-        tell_joke()
-
-    elif "weather" in command:
-        weather()
-
-    elif "open" in command and any(app in command for app in ["notepad", "calculator", "chrome"]):
-        open_app(command)
-
-    elif "shutdown" in command:
-        shutdown()
-
-    elif "restart" in command:
-        restart()
-
-    elif "system info" in command or "cpu" in command or "memory" in command:
-        system_info()
-
-    elif "battery" in command:
-        battery_status()
-
-    elif "network" in command or "ip address" in command:
-        network_info()
-
-    elif "calculate" in command or "compute" in command or "what is" in command:
-        calculate(command)
-
-    elif "screenshot" in command:
-        take_screenshot()
-
-    elif "volume" in command:
-        volume_control(command)
-
-    elif "news" in command:
-        get_news()
-
-    elif "define" in command or "definition" in command or "meaning" in command:
-        dictionary(command)
-
-    elif "timer" in command or "remind me" in command:
-        set_timer(command)
-
-    elif "lock screen" in command or "lock computer" in command:
-        lock_screen()
-
-    elif "empty recycle bin" in command or "clear recycle bin" in command:
-        empty_recycle_bin()
-
-    elif "list files" in command:
-        list_files()
-
-    elif "create note" in command or "make note" in command:
-        create_note()
-
-    elif "who are you" in command:
-        speak("I am your advanced artificial intelligence desktop assistant with enhanced capabilities")
-
-    elif "how are you" in command:
-        speak("I am functioning optimally and ready to assist you")
-
-    elif "what can you do" in command:
-        speak("I can help with time, date, weather, web search, playing videos, system information, calculations, screenshots, volume control, news, dictionary, timers, and much more")
-
-    elif "exit" in command or "bye" in command or "quit" in command:
-        speak("Goodbye! Have a great day")
-        window.quit()
-
+def feat_greet():
+    h=datetime.datetime.now().hour
+    g="Good morning" if h<12 else "Good afternoon" if h<18 else "Good evening"
+    if PORCUPINE_AVAILABLE and _porcupine_handle:
+        speak(f"{g}! I am PA v{VERSION}. Say 'porcupine' to activate me, or type below.")
     else:
-        speak("Command not recognized. Try saying 'what can you do' to see available commands")
+        speak(f"{g}! I am PA v{VERSION}. Say 'hey pa' to activate me, or type below.")
 
-# Start assistant (simplified - no threading)
-def start_assistant():
-    output_text.insert(tk.END, "Assistant started! Say your commands...\n")
-    output_text.see(tk.END)
+# ── DISPATCHER ────────────────────────────────────────────────────────────────
+def dispatch(cmd):
+    c=cmd.lower().strip()
+    set_status(f"Processing: {c[:38]}...",C['violet'])
+    T=threading.Thread
+    if   re.search(r'\b(time|clock)\b',c) and 'timer' not in c: feat_time()
+    elif re.search(r'\bdate\b',c):           feat_date()
+    elif 'chrome' in c and 'open' in c:      T(target=feat_open_chrome,daemon=True).start();return
+    elif re.search(r'\bopen\b',c):
+        is_site=any(k in c for k in SITES); is_app=any(k in c for k in (APP_MAP_WIN if IS_WINDOWS else APP_MAP_LINUX))
+        if is_site:  T(target=feat_open_site,args=(c,),daemon=True).start();return
+        elif is_app: T(target=feat_open_app,args=(c,),daemon=True).start();return
+        else: feat_open_site(c)
+    elif re.search(r'\b(email|gmail)\b',c):  T(target=feat_open_email,daemon=True).start();return
+    elif re.search(r'\byoutube\b',c):        feat_youtube_search(c)
+    elif re.search(r'\b(search|google|look up|find)\b',c): feat_google_search(c)
+    elif re.search(r'\b(calculate|compute|evaluate|solve)\b',c): feat_calculate(c)
+    elif 'screenshot' in c:                  T(target=feat_screenshot,daemon=True).start();return
+    elif re.search(r'\bsystem info\b',c):    T(target=feat_system_info,daemon=True).start();return
+    elif re.search(r'\b(battery|power)\b',c) and 'lock' not in c: T(target=feat_battery,daemon=True).start();return
+    elif re.search(r'\bcpu\b',c):            T(target=feat_cpu,daemon=True).start();return
+    elif re.search(r'\b(ram|memory)\b',c):   T(target=feat_ram,daemon=True).start();return
+    elif re.search(r'\bdisk\b',c):           T(target=feat_disk,daemon=True).start();return
+    elif re.search(r'\bprocess',c):          T(target=feat_processes,daemon=True).start();return
+    elif re.search(r'\b(network info|hostname|local ip)\b',c): T(target=feat_network,daemon=True).start();return
+    elif re.search(r'\b(my ip|public ip)\b',c): T(target=feat_public_ip,daemon=True).start();return
+    elif re.search(r'\bping\b',c):           T(target=feat_ping,daemon=True).start();return
+    elif re.search(r'\b(lock screen|lock computer|lock pc)\b',c): T(target=feat_lock,daemon=True).start();return
+    elif re.search(r'\b(sleep|hibernate)\b',c): T(target=feat_sleep,daemon=True).start();return
+    elif re.search(r'\b(shutdown|shut down)\b',c): feat_shutdown();return
+    elif re.search(r'\b(restart|reboot)\b',c):     feat_restart();return
+    elif re.search(r'\b(log out|logout|sign out)\b',c): T(target=feat_logout,daemon=True).start();return
+    elif re.search(r'\b(wikipedia|wiki)\b',c): T(target=feat_wikipedia,args=(c,),daemon=True).start();return
+    elif re.search(r'\b(define|definition|meaning|dictionary)\b',c): T(target=feat_define,args=(c,),daemon=True).start();return
+    elif re.search(r'\b(weather|temperature)\b',c): T(target=feat_weather,args=(c,),daemon=True).start();return
+    elif re.search(r'\b(news|headlines)\b',c): T(target=feat_news,daemon=True).start();return
+    elif re.search(r'\bvolume\b',c):         T(target=feat_volume,args=(c,),daemon=True).start();return
+    elif re.search(r'\b(alarm|set alarm)\b',c): T(target=feat_alarm,args=(c,),daemon=True).start();return
+    elif re.search(r'\b(timer|remind me|countdown)\b',c): T(target=feat_timer,args=(c,),daemon=True).start();return
+    elif re.search(r'\b(note|create note|new note)\b',c): ROOT.after(0,feat_note);return
+    elif re.search(r'\b(clipboard|paste)\b',c): feat_clipboard()
+    elif re.search(r'\bjoke\b',c):           T(target=feat_joke,daemon=True).start();return
+    elif re.search(r'\b(quote|inspire)\b',c):T(target=feat_quote,daemon=True).start();return
+    elif re.search(r'\b(flip|coin)\b',c):    feat_coin()
+    elif re.search(r'\b(roll|dice)\b',c):    feat_dice(c)
+    elif re.search(r'\btranslate\b',c):      T(target=feat_translate,args=(c,),daemon=True).start();return
+    elif re.search(r'\b(list files|show files|files)\b',c): T(target=feat_list_files,daemon=True).start();return
+    elif re.search(r'\b(hello|hi)\b',c):     speak("Hello! How can I help you?")
+    elif re.search(r'\bhow are you\b',c):    speak("Running perfectly! What can I do for you?")
+    elif re.search(r'\b(who are you|your name)\b',c): speak(f"I am PA v{VERSION}.")
+    elif re.search(r'\b(thank|thanks)\b',c): speak("You are welcome! Anything else?")
+    elif re.search(r'\b(help|what can you do|commands)\b',c): feat_help()
+    elif re.search(r'\b(bye|exit|quit|goodbye|close)\b',c):
+        speak("Goodbye! Have a wonderful day!"); ROOT.after(2200,ROOT.quit)
+    else: speak("I did not understand. Say help to see all commands.")
+    set_status("Waiting for wake word...",C['txt2'])
 
-    # Simple greeting
-    speak("Hello! I am your personal desktop assistant. How can I help you today?")
+# ── CONTROLLER ────────────────────────────────────────────────────────────────
+_running  = False
+_loop_thr = None
 
-    # Start the listening loop
-    window.after(1000, listen_continuous)
+def start_pa():
+    global _running, _loop_thr
+    if _running: return
+    _running = True
+    q(start_btn.config, state=tk.DISABLED, bg=C['txt2'])
+    q(stop_btn.config,  state=tk.NORMAL,   bg=C['coral'])
+    _loop_thr = threading.Thread(target=_main_loop, daemon=True)
+    _loop_thr.start()
 
-def listen_continuous():
-    """Continuous listening loop using tkinter's after() method"""
-    try:
-        command = take_command()
-        if command and command != "none":
-            process_command(command)
-        # Schedule next listen after a short delay
-        window.after(500, listen_continuous)
-    except Exception as e:
-        output_text.insert(tk.END, f"Listening error: {e}\n")
-        output_text.see(tk.END)
-        # Try again after error
-        window.after(2000, listen_continuous)
+def stop_pa():
+    global _running
+    _running = False
+    start_btn.config(state=tk.NORMAL,   bg=C['mint'])
+    stop_btn.config( state=tk.DISABLED, bg=C['txt2'])
+    set_wake_led('idle')
+    set_status("Stopped", C['gold'])
+    warn("PA stopped. Click Start to resume.")
 
+def _main_loop():
+    global _running
+    feat_greet()
 
-# Test TTS function
-def test_tts():
-    speak("Hello! This is a test of the text to speech system. If you can hear this, the voice output is working correctly.")
+    if not _mic_available():
+        warn("No mic. Run: pip install sounddevice numpy")
+        set_status("No mic — use text input", C['orange'])
+        q(start_btn.config, state=tk.NORMAL,   bg=C['mint'])
+        q(stop_btn.config,  state=tk.DISABLED, bg=C['txt2'])
+        _running = False; return
 
-# GUI Window
-window = tk.Tk()
-window.title("🤖 Advanced AI Desktop Assistant")
-window.geometry("800x700")
-window.configure(bg='#2C3E50')  # Dark blue background
+    # Calibrate ONCE here — not inside any recording function
+    if SOUNDDEVICE_AVAILABLE:
+        _calibrate_sounddevice()
 
-print("🎯 Advanced AI Assistant GUI Window Opening...")
-print("Look for the window titled 'Advanced AI Desktop Assistant'")
-print("It should appear in the center of your screen and stay on top for 2 seconds")
+    # Try to load pvporcupine offline wake word engine
+    if PORCUPINE_AVAILABLE:
+        _init_porcupine()
 
-# Make window more visible
-window.attributes('-topmost', True)  # Always on top initially
-window.focus_force()  # Force focus
-window.lift()  # Bring to front
+    if _porcupine_handle:
+        info("pvporcupine active — say 'porcupine' to wake PA.")
+    else:
+        info('Google Speech wake word active — say "hey pa" to wake PA.')
 
-# Center the window on screen
-window.update_idletasks()
-width = window.winfo_width()
-height = window.winfo_height()
-x = (window.winfo_screenwidth() // 2) - (width // 2)
-y = (window.winfo_screenheight() // 2) - (height // 2)
-window.geometry(f'{width}x{height}+{x}+{y}')
+    while _running:
+        set_status("Waiting for wake word...", C['txt2'])
+        set_wake_led('scanning')
+        q(_console_write, "\n  Listening for wake word...\n", "dim")
 
-# Remove always-on-top after 2 seconds
-def remove_topmost():
-    window.attributes('-topmost', False)
-    print("Window is now ready for use!")
-window.after(2000, remove_topmost)
+        woke = False
+        while _running:
+            result = scan_once()
+            if result == "no_mic":
+                warn("Microphone disconnected.")
+                _running = False
+                q(start_btn.config, state=tk.NORMAL,   bg=C['mint'])
+                q(stop_btn.config,  state=tk.DISABLED, bg=C['txt2'])
+                break
+            if result == "woke":
+                set_wake_led('heard')
+                q(_console_write, "  Wake word detected!\n", "ok")
+                _tts_q.put("Yes?")
+                q(_console_write, "[PA] Yes?\n", "pa")
+                woke = True; break
 
-# Title with better styling
-title_frame = tk.Frame(window, bg='#2C3E50')
-title_frame.pack(pady=10)
+        if not _running: break
+        if not woke: continue
 
-title = tk.Label(title_frame, text="🤖 Advanced AI Desktop Assistant",
-                font=("Arial", 24, "bold"), fg='#ECF0F1', bg='#2C3E50')
-title.pack()
+        _tts_q.join()
+        set_status("Listening for command...", C['coral'])
+        set_wake_led('listening')
+        q(_console_write, "  Listening for command...\n", "dim")
 
-subtitle = tk.Label(title_frame, text="Your Intelligent Voice Assistant",
-                   font=("Arial", 12), fg='#BDC3C7', bg='#2C3E50')
-subtitle.pack(pady=(0, 10))
+        command = capture_voice(duration=6, wake_scan=False)
+        if not _running: break
 
-# Status indicator
-status_frame = tk.Frame(window, bg='#2C3E50')
-status_frame.pack(pady=5)
+        if command and command != "NO_MIC":
+            user_echo(command); dispatch(command)
+        elif command == "NO_MIC":
+            warn("Microphone unavailable.")
+        else:
+            speak("I did not catch that. Please try again.")
 
-status_label = tk.Label(status_frame, text="● Ready", font=("Arial", 10, "bold"),
-                       fg='#27AE60', bg='#2C3E50')
-status_label.pack()
+    set_wake_led('idle')
+    set_status("PA stopped.", C['gold'])
 
-# Quick action buttons frame
-button_frame = tk.Frame(window, bg='#34495E', relief='raised', bd=2)
-button_frame.pack(pady=10, padx=20, fill='x')
+# ── GUI HELPERS ───────────────────────────────────────────────────────────────
+def _mk_btn(parent, text, cmd, bg, fg=None, w=20):
+    return tk.Button(parent, text=text, command=cmd, bg=bg, fg=fg or C['bg0'],
+                     font=FNT_BTN, relief='flat', width=w, height=1, cursor='hand2',
+                     activebackground=C['bg4'], activeforeground=C['txt0'], bd=0, padx=4)
 
-# Row 1: Voice and Text Input
-voice_frame = tk.Frame(button_frame, bg='#34495E')
-voice_frame.pack(pady=5)
+def _section_label(parent, text):
+    frm=tk.Frame(parent,bg=C['bg1']); frm.pack(fill='x',padx=10,pady=(10,2))
+    tk.Label(frm,text=f"  {text}",font=("Helvetica Neue",7,"bold"),
+             fg=C['txt2'],bg=C['bg1'],anchor='w').pack(fill='x')
+    tk.Frame(frm,bg=C['border'],height=1).pack(fill='x',pady=(2,0))
 
-voice_button = tk.Button(voice_frame, text="🎤 Voice Command", font=("Arial", 11, "bold"),
-                        bg='#E74C3C', fg='white', width=15, height=2,
-                        relief='raised', bd=3, command=lambda: threading.Thread(target=voice_command_thread, daemon=True).start())
-voice_button.pack(side=tk.LEFT, padx=5)
+def _side_btn(parent, text, cmd, color=None):
+    b=tk.Button(parent,text=text,command=cmd,bg=color or C['bg3'],fg=C['txt1'],
+                font=("Helvetica Neue",8,"bold"),relief='flat',anchor='w',
+                cursor='hand2',width=24,padx=10,pady=3,
+                activebackground=C['bg4'],activeforeground=C['txt0'])
+    b.pack(fill='x',padx=10,pady=1); return b
 
-text_button = tk.Button(voice_frame, text="✍️ Text Command", font=("Arial", 11, "bold"),
-                       bg='#3498DB', fg='white', width=15, height=2,
-                       relief='raised', bd=3, command=lambda: threading.Thread(target=text_command_thread, daemon=True).start())
-text_button.pack(side=tk.LEFT, padx=5)
+def qr(fn, *args): threading.Thread(target=fn, args=args, daemon=True).start()
 
-# Row 2: Quick Actions
-quick_frame = tk.Frame(button_frame, bg='#34495E')
-quick_frame.pack(pady=5)
+def _do_oneshot_voice():
+    def _r():
+        if not _mic_available(): err("Run: pip install sounddevice numpy"); return
+        set_status("Listening...", C['coral'])
+        result = capture_voice(duration=6, wake_scan=False)
+        if result and result != "NO_MIC": user_echo(result); dispatch(result)
+        elif result == "NO_MIC": err("No mic backend.")
+        else: warn("Nothing heard."); set_status("Ready", C['mint'])
+    threading.Thread(target=_r, daemon=True).start()
 
-time_btn = tk.Button(quick_frame, text="🕐 Time", font=("Arial", 9), bg='#9B59B6', fg='white',
-                    width=10, height=1, command=lambda: tell_time())
-time_btn.pack(side=tk.LEFT, padx=3)
+def _do_text_input():
+    def _r():
+        cmd=ask_text("Enter your command:")
+        if cmd and cmd.strip(): user_echo(cmd); dispatch(cmd.lower().strip())
+    threading.Thread(target=_r, daemon=True).start()
 
-date_btn = tk.Button(quick_frame, text="📅 Date", font=("Arial", 9), bg='#9B59B6', fg='white',
-                    width=10, height=1, command=lambda: tell_date())
-date_btn.pack(side=tk.LEFT, padx=3)
+def _do_calc_prompt():
+    def _r():
+        expr=ask_text("Enter expression (e.g. 25 * 4 + 10):","Calculator")
+        if expr and expr.strip(): feat_calculate(f"calculate {expr}")
+    threading.Thread(target=_r, daemon=True).start()
 
-weather_btn = tk.Button(quick_frame, text="🌤️ Weather", font=("Arial", 9), bg='#F39C12', fg='white',
-                       width=10, height=1, command=lambda: weather())
-weather_btn.pack(side=tk.LEFT, padx=3)
+def _do_wiki_prompt():
+    def _r():
+        query=ask_text("Search Wikipedia:","Wikipedia")
+        if query and query.strip(): feat_wikipedia(f"wikipedia {query}")
+    threading.Thread(target=_r, daemon=True).start()
 
-joke_btn = tk.Button(quick_frame, text="😄 Joke", font=("Arial", 9), bg='#E67E22', fg='white',
-                    width=10, height=1, command=lambda: tell_joke())
-joke_btn.pack(side=tk.LEFT, padx=3)
+def _do_define_prompt():
+    def _r():
+        word=ask_text("Define which word?","Dictionary")
+        if word and word.strip(): feat_define(f"define {word}")
+    threading.Thread(target=_r, daemon=True).start()
 
-# Row 3: System Actions
-system_frame = tk.Frame(button_frame, bg='#34495E')
-system_frame.pack(pady=5)
+def _do_timer_prompt():
+    def _r():
+        val=ask_text("Timer duration (e.g. 5 minutes):","Timer")
+        if val and val.strip(): feat_timer(f"set timer for {val}")
+    threading.Thread(target=_r, daemon=True).start()
 
-sysinfo_btn = tk.Button(system_frame, text="💻 System Info", font=("Arial", 9), bg='#16A085', fg='white',
-                       width=12, height=1, command=lambda: system_info())
-sysinfo_btn.pack(side=tk.LEFT, padx=3)
+def _do_alarm_prompt():
+    def _r():
+        val=ask_text("Alarm time (e.g. 7 30 am):","Alarm")
+        if val and val.strip(): feat_alarm(f"set alarm for {val}")
+    threading.Thread(target=_r, daemon=True).start()
 
-battery_btn = tk.Button(system_frame, text="🔋 Battery", font=("Arial", 9), bg='#16A085', fg='white',
-                       width=10, height=1, command=lambda: battery_status())
-battery_btn.pack(side=tk.LEFT, padx=3)
+def _do_youtube_search():
+    def _r():
+        qs=ask_text("Search YouTube for:","YouTube")
+        if qs: feat_youtube_search(f"youtube {qs}")
+    threading.Thread(target=_r, daemon=True).start()
 
-calc_btn = tk.Button(system_frame, text="🧮 Calculator", font=("Arial", 9), bg='#2980B9', fg='white',
-                    width=12, height=1, command=lambda: threading.Thread(target=calc_thread, daemon=True).start())
-calc_btn.pack(side=tk.LEFT, padx=3)
+def _do_google_search():
+    def _r():
+        qs=ask_text("Search Google for:","Google Search")
+        if qs: feat_google_search(f"search {qs}")
+    threading.Thread(target=_r, daemon=True).start()
 
-# Row 4: Utility Actions
-utility_frame = tk.Frame(button_frame, bg='#34495E')
-utility_frame.pack(pady=5)
+# ── BUILD GUI ─────────────────────────────────────────────────────────────────
+ROOT=tk.Tk()
+ROOT.title(f"PA — Personal Assistant v{VERSION}")
+ROOT.geometry("1060x760"); ROOT.configure(bg=C['bg0']); ROOT.resizable(True,True)
+ROOT.update_idletasks()
+sw,sh=ROOT.winfo_screenwidth(),ROOT.winfo_screenheight()
+ROOT.geometry(f"1060x760+{(sw-1060)//2}+{(sh-760)//2}")
 
-note_btn = tk.Button(utility_frame, text="📝 Create Note", font=("Arial", 9), bg='#8E44AD', fg='white',
-                    width=12, height=1, command=lambda: create_note())
-note_btn.pack(side=tk.LEFT, padx=3)
+tk.Frame(ROOT,bg=C['gold'],height=3).pack(fill='x',side='top')
+hdr=tk.Frame(ROOT,bg=C['bg0']); hdr.pack(fill='x')
+hdr_left=tk.Frame(hdr,bg=C['bg0']); hdr_left.pack(side=tk.LEFT,padx=20,pady=10)
+tk.Label(hdr_left,text="PA",font=("Helvetica Neue",36,"bold"),fg=C['gold'],bg=C['bg0']).pack(side=tk.LEFT)
+tk.Label(hdr_left,text=f"  Personal Assistant  v{VERSION}",font=("Helvetica Neue",11),fg=C['txt2'],bg=C['bg0']).pack(side=tk.LEFT,pady=(12,0))
+hdr_right=tk.Frame(hdr,bg=C['bg0']); hdr_right.pack(side=tk.RIGHT,padx=20)
+wake_led=tk.Label(hdr_right,text="IDLE",font=("Helvetica Neue",9,"bold"),fg=C['txt2'],bg=C['bg0'])
+wake_led.pack(anchor='e')
+clock_var=tk.StringVar(value="")
+tk.Label(hdr_right,textvariable=clock_var,font=("Courier New",9),fg=C['txt2'],bg=C['bg0']).pack(anchor='e')
+tk.Label(hdr,text='Say "hey pa" to activate  |  or type below',font=("Helvetica Neue",9,"italic"),fg=C['gold_dim'],bg=C['bg0']).pack(side=tk.LEFT,padx=6)
+def _tick(): clock_var.set(datetime.datetime.now().strftime("  %a %b %d  %H:%M:%S")); ROOT.after(1000,_tick)
+_tick()
 
-timer_btn = tk.Button(utility_frame, text="⏰ Set Timer", font=("Arial", 9), bg='#8E44AD', fg='white',
-                     width=12, height=1, command=lambda: threading.Thread(target=timer_thread, daemon=True).start())
-timer_btn.pack(side=tk.LEFT, padx=3)
+tk.Frame(ROOT,bg=C['border'],height=1).pack(fill='x')
+sbar=tk.Frame(ROOT,bg=C['bg1'],height=24); sbar.pack(fill='x')
+status_var=tk.StringVar(value="Initialising...")
+status_lbl=tk.Label(sbar,textvariable=status_var,font=("Helvetica Neue",8),fg=C['teal'],bg=C['bg1'],anchor='w',padx=14)
+status_lbl.pack(side=tk.LEFT)
+for label,ok in [("TTS",TTS_AVAILABLE),("Porc",PORCUPINE_AVAILABLE),("SD",SOUNDDEVICE_AVAILABLE),
+                 ("SR",SR_AVAILABLE),("psutil",PSUTIL_AVAILABLE),("wiki",WIKI_AVAILABLE)]:
+    tk.Label(sbar,text=label,font=("Helvetica Neue",7,"bold"),
+             fg=C['mint'] if ok else C['coral'],bg=C['bg1']).pack(side=tk.RIGHT,padx=4)
+tk.Label(sbar,text="  libs: ",font=("Helvetica Neue",7),fg=C['txt2'],bg=C['bg1']).pack(side=tk.RIGHT)
+tk.Frame(ROOT,bg=C['border'],height=1).pack(fill='x')
 
-screenshot_btn = tk.Button(utility_frame, text="📸 Screenshot", font=("Arial", 9), bg='#D35400', fg='white',
-                          width=12, height=1, command=lambda: take_screenshot())
-screenshot_btn.pack(side=tk.LEFT, padx=3)
+body=tk.Frame(ROOT,bg=C['bg0']); body.pack(fill='both',expand=True)
+sidebar=tk.Frame(body,bg=C['bg1'],width=220); sidebar.pack(side=tk.LEFT,fill='y'); sidebar.pack_propagate(False)
+sb_canvas=tk.Canvas(sidebar,bg=C['bg1'],highlightthickness=0,bd=0); sb_canvas.pack(side=tk.LEFT,fill='both',expand=True)
+sb_scroll=tk.Scrollbar(sidebar,orient='vertical',command=sb_canvas.yview); sb_scroll.pack(side=tk.RIGHT,fill='y')
+sb_canvas.configure(yscrollcommand=sb_scroll.set)
+sb_inner=tk.Frame(sb_canvas,bg=C['bg1'])
+sb_win=sb_canvas.create_window((0,0),window=sb_inner,anchor='nw')
+def _sb_cfg(e): sb_canvas.configure(scrollregion=sb_canvas.bbox("all")); sb_canvas.itemconfig(sb_win,width=e.width)
+sb_inner.bind('<Configure>',_sb_cfg)
+sb_canvas.bind('<Configure>',lambda e:sb_canvas.itemconfig(sb_win,width=e.width))
+sb_canvas.bind_all("<MouseWheel>",lambda e:sb_canvas.yview_scroll(int(-1*(e.delta/120)),"units"))
 
-# Output text area with better styling
-output_frame = tk.Frame(window, bg='#2C3E50')
-output_frame.pack(pady=10, padx=20, fill='both', expand=True)
+_section_label(sb_inner,"CONTROL")
+start_btn=_mk_btn(sb_inner,"  Start PA",start_pa,C['mint'],C['bg0'],w=22); start_btn.pack(fill='x',padx=10,pady=2)
+stop_btn =_mk_btn(sb_inner,"  Stop PA", stop_pa, C['txt2'],'white',  w=22); stop_btn.pack(fill='x',padx=10,pady=2)
+stop_btn.config(state=tk.DISABLED)
+voice_row=tk.Frame(sb_inner,bg=C['bg1']); voice_row.pack(fill='x',padx=10,pady=2)
+for txt,cmd,bg in [("Mic Voice",_do_oneshot_voice,C['coral']),("Text Input",_do_text_input,C['teal'])]:
+    tk.Button(voice_row,text=txt,command=cmd,bg=bg,fg=C['bg0'],font=("Helvetica Neue",8,"bold"),
+              relief='flat',cursor='hand2',padx=6,pady=4,activebackground=C['bg4'],
+              activeforeground=C['txt0']).pack(side=tk.LEFT,expand=True,fill='x',padx=1)
+_side_btn(sb_inner,"Test Voice",lambda:qr(lambda:speak("Hello! PA voice is working perfectly.")),C['bg3'])
 
-output_label = tk.Label(output_frame, text="Assistant Output:", font=("Arial", 12, "bold"),
-                       fg='#ECF0F1', bg='#2C3E50')
-output_label.pack(anchor='w')
+_section_label(sb_inner,"TIME & DATE")
+_side_btn(sb_inner,"Current Time",lambda:qr(feat_time))
+_side_btn(sb_inner,"Current Date",lambda:qr(feat_date))
+_side_btn(sb_inner,"Date & Time", lambda:qr(feat_datetime))
 
-output_text = tk.Text(output_frame, height=15, font=("Consolas", 10),
-                     bg='#1A252F', fg='#ECF0F1', insertbackground='white',
-                     relief='sunken', bd=3)
-output_text.pack(fill=tk.BOTH, expand=True)
+_section_label(sb_inner,"WEB & SOCIAL")
+_side_btn(sb_inner,"Google Search",  _do_google_search)
+_side_btn(sb_inner,"YouTube Search", _do_youtube_search)
+_side_btn(sb_inner,"Open YouTube",   lambda:qr(lambda:(speak("Opening YouTube."),webbrowser.open("https://www.youtube.com"))))
+_side_btn(sb_inner,"LinkedIn",       lambda:qr(lambda:(speak("Opening LinkedIn."),webbrowser.open("https://linkedin.com"))))
+_side_btn(sb_inner,"GitHub",         lambda:qr(lambda:(speak("Opening GitHub."),webbrowser.open("https://github.com"))))
+_side_btn(sb_inner,"Gmail / Email",  lambda:qr(feat_open_email))
+_side_btn(sb_inner,"Chrome",         lambda:qr(feat_open_chrome))
+_side_btn(sb_inner,"WhatsApp Web",   lambda:qr(lambda:(speak("Opening WhatsApp."),webbrowser.open("https://web.whatsapp.com"))))
+_side_btn(sb_inner,"Spotify",        lambda:qr(lambda:(speak("Opening Spotify."),webbrowser.open("https://open.spotify.com"))))
+_side_btn(sb_inner,"Discord",        lambda:qr(lambda:(speak("Opening Discord."),webbrowser.open("https://discord.com/app"))))
+_side_btn(sb_inner,"Instagram",      lambda:qr(lambda:(speak("Opening Instagram."),webbrowser.open("https://instagram.com"))))
 
-# Add scrollbar with styling
-scrollbar = tk.Scrollbar(output_text, bg='#34495E', troughcolor='#2C3E50')
-scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-output_text.config(yscrollcommand=scrollbar.set)
-scrollbar.config(command=output_text.yview)
+_section_label(sb_inner,"SYSTEM INFO")
+_side_btn(sb_inner,"System Info",  lambda:qr(feat_system_info))
+_side_btn(sb_inner,"Battery",      lambda:qr(feat_battery))
+_side_btn(sb_inner,"CPU Usage",    lambda:qr(feat_cpu))
+_side_btn(sb_inner,"RAM Usage",    lambda:qr(feat_ram))
+_side_btn(sb_inner,"Disk Usage",   lambda:qr(feat_disk))
+_side_btn(sb_inner,"Processes",    lambda:qr(feat_processes))
+_side_btn(sb_inner,"Network Info", lambda:qr(feat_network))
+_side_btn(sb_inner,"Public IP",    lambda:qr(feat_public_ip))
+_side_btn(sb_inner,"Ping Test",    lambda:qr(feat_ping))
 
-# Bottom control buttons
-control_frame = tk.Frame(window, bg='#2C3E50')
-control_frame.pack(pady=10)
+_section_label(sb_inner,"POWER")
+_side_btn(sb_inner,"Lock Screen",     lambda:qr(feat_lock),  C['bg3'])
+_side_btn(sb_inner,"Sleep / Suspend", lambda:qr(feat_sleep), C['bg3'])
+_side_btn(sb_inner,"Restart",         feat_restart,          C['bg3'])
+_side_btn(sb_inner,"Log Out",         lambda:qr(feat_logout),C['bg3'])
+_side_btn(sb_inner,"Shutdown",        feat_shutdown,         C['bg3'])
 
-start_button = tk.Button(control_frame, text="▶️ Start Assistant", font=("Arial", 11, "bold"),
-                        bg='#27AE60', fg='white', width=15, height=2,
-                        relief='raised', bd=3, command=start_assistant)
-start_button.pack(side=tk.LEFT, padx=10)
+_section_label(sb_inner,"TOOLS")
+_side_btn(sb_inner,"Calculator",_do_calc_prompt)
+_side_btn(sb_inner,"Screenshot", lambda:qr(feat_screenshot))
+_side_btn(sb_inner,"Set Timer",  _do_timer_prompt)
+_side_btn(sb_inner,"Set Alarm",  _do_alarm_prompt)
+_side_btn(sb_inner,"Quick Note", lambda:ROOT.after(0,feat_note))
+_side_btn(sb_inner,"Clipboard",  feat_clipboard)
+_side_btn(sb_inner,"Volume",     lambda:qr(lambda:feat_volume("status")))
 
-test_tts_button = tk.Button(control_frame, text="🔊 Test Voice", font=("Arial", 11, "bold"),
-                           bg='#F1C40F', fg='black', width=15, height=2,
-                           relief='raised', bd=3, command=test_tts)
-test_tts_button.pack(side=tk.LEFT, padx=10)
+_section_label(sb_inner,"KNOWLEDGE")
+_side_btn(sb_inner,"Wikipedia",  _do_wiki_prompt)
+_side_btn(sb_inner,"Dictionary", _do_define_prompt)
+_side_btn(sb_inner,"Weather",    lambda:qr(feat_weather))
+_side_btn(sb_inner,"News",       lambda:qr(feat_news))
+_side_btn(sb_inner,"Translate",  lambda:(lambda t:feat_translate(f"translate {t}") if t else None)(ask_text("Text to translate:","Translate")))
 
-clear_button = tk.Button(control_frame, text="🗑️ Clear Output", font=("Arial", 11, "bold"),
-                        bg='#95A5A6', fg='white', width=15, height=2,
-                        relief='raised', bd=3, command=lambda: output_text.delete(1.0, tk.END))
-clear_button.pack(side=tk.LEFT, padx=10)
+_section_label(sb_inner,"FUN")
+_side_btn(sb_inner,"Tell a Joke",lambda:qr(feat_joke))
+_side_btn(sb_inner,"Inspire Me", lambda:qr(feat_quote))
+_side_btn(sb_inner,"Flip a Coin",feat_coin)
+_side_btn(sb_inner,"Roll a Dice",lambda:feat_dice("6"))
 
-# Thread functions for button commands
-def voice_command_thread():
-    try:
-        command = take_command()
-        if command and command != "none":
-            process_command(command)
-    except Exception as e:
-        output_text.insert(tk.END, f"Voice command error: {e}\n")
-        output_text.see(tk.END)
+_section_label(sb_inner,"ACTIONS")
+_side_btn(sb_inner,"List Files",      lambda:qr(feat_list_files))
+_side_btn(sb_inner,"Help / Commands", feat_help,C['violet'])
+_side_btn(sb_inner,"Clear Console",
+          lambda:(console.config(state=tk.NORMAL),console.delete('1.0',tk.END),console.config(state=tk.DISABLED)),C['bg3'])
 
-def text_command_thread():
-    try:
-        command = gui_text_input()
-        if command:
-            output_text.insert(tk.END, f"✍️ You typed: {command}\n")
-            output_text.see(tk.END)
-            process_command(command.lower())
-    except Exception as e:
-        output_text.insert(tk.END, f"Text command error: {e}\n")
-        output_text.see(tk.END)
+tk.Frame(body,bg=C['border'],width=1).pack(side=tk.LEFT,fill='y')
+right=tk.Frame(body,bg=C['bg0']); right.pack(side=tk.LEFT,fill='both',expand=True)
+con_hdr=tk.Frame(right,bg=C['bg1'],height=30); con_hdr.pack(fill='x'); con_hdr.pack_propagate(False)
+tk.Label(con_hdr,text="  PA CONSOLE",font=("Helvetica Neue",9,"bold"),fg=C['teal'],bg=C['bg1']).pack(side=tk.LEFT,padx=4,pady=5)
+tk.Label(con_hdr,text=f"{platform.system()} {platform.release()} · Python {platform.python_version()}  ",
+         font=("Helvetica Neue",8),fg=C['txt2'],bg=C['bg1']).pack(side=tk.RIGHT,pady=5)
+con_frame=tk.Frame(right,bg=C['bg0']); con_frame.pack(fill='both',expand=True)
+console=tk.Text(con_frame,font=FNT_MONO,bg=C['bg0'],fg=C['txt1'],insertbackground=C['gold'],
+                relief='flat',bd=0,wrap=tk.WORD,padx=16,pady=10,
+                selectbackground=C['gold'],selectforeground=C['bg0'],state=tk.DISABLED)
+console.pack(side=tk.LEFT,fill='both',expand=True)
+con_scroll=tk.Scrollbar(con_frame,orient='vertical',command=console.yview,bg=C['bg1'],troughcolor=C['bg0'])
+con_scroll.pack(side=tk.RIGHT,fill='y'); console.configure(yscrollcommand=con_scroll.set)
+for tag,fg in [("pa",C['teal']),("user",C['gold']),("heard",C['violet']),("info",C['txt2']),
+               ("warn",C['orange']),("err",C['coral']),("ok",C['mint']),("dim",C['bg4']),("normal",C['txt1'])]:
+    console.tag_configure(tag,foreground=fg)
 
-def calc_thread():
-    calc_input = gui_text_input("Enter calculation (e.g., 2+2*3):")
-    if calc_input:
-        command = f"calculate {calc_input}"
-        process_command(command)
+ibar=tk.Frame(right,bg=C['bg1'],height=44); ibar.pack(fill='x',side='bottom'); ibar.pack_propagate(False)
+tk.Frame(right,bg=C['border'],height=1).pack(fill='x',side='bottom')
+tk.Label(ibar,text="  >",font=("Courier New",16,"bold"),fg=C['gold'],bg=C['bg1']).pack(side=tk.LEFT,padx=(8,2))
+PLACEHOLDER="Type a command and press Enter..."
+ivar=tk.StringVar()
+ientry=tk.Entry(ibar,textvariable=ivar,font=("Courier New",10),bg=C['bg2'],fg=C['txt0'],
+                insertbackground=C['gold'],relief='flat',bd=4,highlightthickness=1,
+                highlightcolor=C['teal'],highlightbackground=C['border'])
+ientry.pack(side=tk.LEFT,fill='both',expand=True,padx=4,pady=7)
+ientry.insert(0,PLACEHOLDER); ientry.config(fg=C['txt2'])
+ientry.bind('<FocusIn>',  lambda e:(ientry.delete(0,tk.END),ientry.config(fg=C['txt0'])) if ientry.get()==PLACEHOLDER else None)
+ientry.bind('<FocusOut>', lambda e:(ientry.insert(0,PLACEHOLDER),ientry.config(fg=C['txt2'])) if not ientry.get() else None)
+def _submit(e=None):
+    cmd=ivar.get().strip()
+    if cmd and cmd!=PLACEHOLDER:
+        ientry.delete(0,tk.END); user_echo(cmd)
+        threading.Thread(target=dispatch,args=(cmd.lower(),),daemon=True).start()
+ientry.bind('<Return>',_submit)
+_mk_btn(ibar,"Send",_submit,C['gold'],C['bg0'],w=9).pack(side=tk.RIGHT,padx=8,pady=7)
 
-def timer_thread():
-    timer_input = gui_text_input("Set timer (e.g., 5 minutes):")
-    if timer_input:
-        command = f"set timer for {timer_input}"
-        process_command(command)
+# ── BOOT MESSAGE ──────────────────────────────────────────────────────────────
+def _boot_msg():
+    _console_write("╔══════════════════════════════════════════════════╗\n","ok")
+    _console_write("║      PA — Personal Assistant  v2.3               ║\n","ok")
+    _console_write("║      Wake: pvporcupine (offline) + Google fallback║\n","ok")
+    _console_write("╚══════════════════════════════════════════════════╝\n\n","ok")
+    _console_write(f"  Platform : {platform.system()} {platform.release()}\n","info")
+    _console_write(f"  Python   : {platform.python_version()}\n\n","info")
+    for label,ok,fix in [
+        ("SR",           SR_AVAILABLE,           "pip install SpeechRecognition"),
+        ("sounddevice",  SOUNDDEVICE_AVAILABLE,   "pip install sounddevice numpy"),
+        ("pvporcupine",  PORCUPINE_AVAILABLE,     "pip install pvporcupine  (optional offline wake word)"),
+        ("TTS",          TTS_AVAILABLE,           "pip install pyttsx3"),
+        ("psutil",       PSUTIL_AVAILABLE,        "pip install psutil"),
+        ("wikipedia",    WIKI_AVAILABLE,          "pip install wikipedia"),
+        ("pyautogui",    PYAUTOGUI_AVAILABLE,     "pip install pyautogui"),
+        ("requests",     REQUESTS_AVAILABLE,      "pip install requests"),
+    ]:
+        _console_write(f"  {label:<16}: {'Ready' if ok else ('optional — '+fix if 'optional' in fix else 'MISSING — '+fix)}\n",
+                       "ok" if ok else ("info" if "optional" in fix else "warn"))
+    if not SOUNDDEVICE_AVAILABLE:
+        _console_write("\n  VOICE DISABLED — run: pip install sounddevice numpy\n","err")
+    elif PORCUPINE_AVAILABLE:
+        _console_write('\n  Say "porcupine" → PA says "Yes?" → speak your command\n',"normal")
+        _console_write('  (For custom "hey pa" keyword: https://console.picovoice.ai)\n',"info")
+    else:
+        _console_write('\n  Say "hey pa" → PA says "Yes?" → speak your command\n',"normal")
+    _console_write("  Or type in the bar below and press Enter\n","normal")
+    _console_write("  Click Help / Commands to see all commands\n\n","normal")
 
-window.mainloop()
+_boot_msg()
+set_status("Ready", C['mint'])
+ROOT.after(40, flush_gui)
+ROOT.mainloop()
+_tts_q.put(None)
