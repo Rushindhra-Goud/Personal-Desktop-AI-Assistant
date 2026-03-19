@@ -243,8 +243,8 @@ def _do_wake_led(state):
 # ══════════════════════════════════════════════════════════════════════════════
 #  CALIBRATION — called ONCE at startup, no duplicate calls
 # ══════════════════════════════════════════════════════════════════════════════
-_NOISE_RMS          = 200
-_SPEECH_THRESHOLD   = 400
+_NOISE_RMS          = 100
+_SPEECH_THRESHOLD   = 200
 _AMBIENT_CALIBRATED = False
 
 def _calibrate_sounddevice():
@@ -261,14 +261,14 @@ def _calibrate_sounddevice():
         data = sd.rec(int(CALIBRATION_SEC * SAMPLE_RATE), samplerate=SAMPLE_RATE,
                       channels=CHANNELS, dtype=DTYPE)
         sd.wait()
-        _NOISE_RMS        = max(50, float(np.sqrt(np.mean(data.astype(np.float32) ** 2))))
-        _SPEECH_THRESHOLD = max(200, int(_NOISE_RMS * 4))
+        _NOISE_RMS        = max(30, float(np.sqrt(np.mean(data.astype(np.float32) ** 2))))
+        _SPEECH_THRESHOLD = max(100, int(_NOISE_RMS * 2.5))
         _AMBIENT_CALIBRATED = True
         info(f"Calibrated. Noise RMS={_NOISE_RMS:.0f}  Speech threshold={_SPEECH_THRESHOLD}")
     except Exception as e:
         warn(f"Calibration failed ({e}) — using defaults.")
-        _NOISE_RMS        = 200
-        _SPEECH_THRESHOLD = 400
+        _NOISE_RMS        = 100
+        _SPEECH_THRESHOLD = 200
         _AMBIENT_CALIBRATED = True
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -352,28 +352,31 @@ def _record_until_silence(max_seconds=10):
 # ── CHANGE 1: strict _is_wake_phrase — no false triggers on just "pa" or "hey"
 def _is_wake_phrase(text: str) -> bool:
     """
-    FIX: Only trigger on actual "hey pa" phrases.
-    Old version triggered on single words like "pa" or "hey" causing
-    false positives constantly. Now requires the full wake phrase.
+    Returns True if the recognised text contains the wake phrase.
+    Supports "hey pa" and its common mishearings, plus the simple
+    word "wake" so the user can just say "wake" to activate PA.
     """
     if not text:
         return False
     t = text.lower().strip()
 
-    # Exact and near-exact matches only — must contain both words
-    strict_wake_words = [
+    wake_phrases = [
+        # Primary wake word
         "hey pa", "hey p a", "heypa",
+        # Mishearings of "hey pa"
         "okay pa", "ok pa", "hey pee ay",
-        "hay pa", "aye pa", "hey par",
-        "a pa",   "hey pea",
+        "hay pa",  "aye pa", "hey par",
+        "a pa",    "hey pea", "hey pie",
+        "hey pas", "hepa",
+        # Simple single-word trigger — user can just say "wake"
+        "wake",
     ]
-    for w in strict_wake_words:
-        if w in t:
+    for phrase in wake_phrases:
+        if phrase in t:
+            logger.info("Wake phrase matched '%s' in: %s", phrase, t)
             return True
 
-    # Debug print so you can see what was heard during wake scanning
-    # CHANGE 3: added wake word debug print
-    print(f"[Wake scan] Heard: '{text}' — not a wake phrase")
+    logger.debug("Wake scan heard '%s' — no match", text)
     return False
 
 # ── CHANGE 2: pvporcupine offline wake word engine ────────────────────────────
@@ -1065,7 +1068,7 @@ def feat_help():
     q(_console_write,"""
 PA COMMANDS
 ====================================================
-WAKE        : say "hey pa" → PA says "Yes?" → speak
+WAKE        : say "hey pa" or "wake" → PA says "Hello Rushindhra!" → speak
              (if pvporcupine installed, say "porcupine")
 TIME / DATE : what time is it / what is the date
 OPEN SITES  : open youtube / gmail / github / reddit
@@ -1235,8 +1238,8 @@ def _main_loop():
             if result == "woke":
                 set_wake_led('heard')
                 q(_console_write, "  Wake word detected!\n", "ok")
-                _tts_q.put("Yes?")
-                q(_console_write, "[PA] Yes?\n", "pa")
+                _tts_q.put("Hello Rushindhra!")
+                q(_console_write, "[PA] Hello Rushindhra!\n", "pa")
                 woke = True; break
 
         if not _is_running(): break
@@ -1357,7 +1360,7 @@ wake_led=tk.Label(hdr_right,text="IDLE",font=("Helvetica Neue",9,"bold"),fg=C['t
 wake_led.pack(anchor='e')
 clock_var=tk.StringVar(value="")
 tk.Label(hdr_right,textvariable=clock_var,font=("Courier New",9),fg=C['txt2'],bg=C['bg0']).pack(anchor='e')
-tk.Label(hdr,text='Say "hey pa" to activate  |  or type below',font=("Helvetica Neue",9,"italic"),fg=C['gold_dim'],bg=C['bg0']).pack(side=tk.LEFT,padx=6)
+tk.Label(hdr,text='Say "hey pa" or "wake" to activate  |  or type below',font=("Helvetica Neue",9,"italic"),fg=C['gold_dim'],bg=C['bg0']).pack(side=tk.LEFT,padx=6)
 def _tick(): clock_var.set(datetime.datetime.now().strftime("  %a %b %d  %H:%M:%S")); ROOT.after(1000,_tick)
 _tick()
 
@@ -1520,10 +1523,10 @@ def _boot_msg():
     if not SOUNDDEVICE_AVAILABLE:
         _console_write("\n  VOICE DISABLED — run: pip install sounddevice numpy\n","err")
     elif PORCUPINE_AVAILABLE:
-        _console_write('\n  Say "porcupine" → PA says "Yes?" → speak your command\n',"normal")
+        _console_write('\n  Say "porcupine" → PA says "Hello Rushindhra!" → speak your command\n',"normal")
         _console_write('  (For custom "hey pa" keyword: https://console.picovoice.ai)\n',"info")
     else:
-        _console_write('\n  Say "hey pa" → PA says "Yes?" → speak your command\n',"normal")
+        _console_write('\n  Say "hey pa" or "wake" → PA says "Hello Rushindhra!" → speak\n',"normal")
     _console_write("  Or type in the bar below and press Enter\n","normal")
     _console_write("  Click Help / Commands to see all commands\n\n","normal")
 
