@@ -20,6 +20,9 @@ import platform
 import subprocess
 import random
 import math
+import ast
+import operator as op
+import logging
 import tkinter as tk
 import tkinter.messagebox as msgbox
 
@@ -105,15 +108,32 @@ except ImportError:
 # ── CONSTANTS ─────────────────────────────────────────────────────────────────
 VERSION       = "2.3"
 WAKE_WORD     = "hey pa"
-SAMPLE_RATE   = 16000
-CHANNELS      = 1
-DTYPE         = 'int16'
-CHUNK_MS      = 30
+SAMPLE_RATE   = 16000          # Hz — microphone sample rate
+CHANNELS      = 1              # mono
+DTYPE         = 'int16'        # 16-bit PCM
+CHUNK_MS      = 30             # milliseconds per audio chunk
 CHUNK_SAMPLES = int(SAMPLE_RATE * CHUNK_MS / 1000)
+
+# Voice activity detection tuning
+WAIT_FOR_SPEECH_SEC = 8        # max seconds to wait for speech to start
+SILENCE_DURATION_MS = 800      # ms of consecutive silence that ends recording
+WAKE_SCAN_SEC       = 3        # seconds to listen for wake word
+WAKE_SILENCE_MS     = 600      # ms of silence that ends wake-word capture
+COMMAND_DURATION_SEC = 6       # max seconds for command audio capture
+CALIBRATION_SEC     = 2        # seconds of silence for mic calibration
 
 IS_WINDOWS = platform.system() == "Windows"
 IS_LINUX   = platform.system() == "Linux"
 IS_MAC     = platform.system() == "Darwin"
+
+# ── LOGGING ───────────────────────────────────────────────────────────────────
+logging.basicConfig(
+    filename='pa_assistant.log',
+    level=logging.WARNING,
+    format='%(asctime)s %(levelname)s %(funcName)s: %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S',
+)
+logger = logging.getLogger('PA')
 
 C = {
     'bg0':'#070B14','bg1':'#0C1220','bg2':'#111827','bg3':'#192338','bg4':'#1F2D47',
@@ -151,7 +171,8 @@ def _tts_worker():
             engine.setProperty('volume', 1.0)
             if TTS_VOICE_ID:
                 engine.setProperty('voice', TTS_VOICE_ID)
-        except Exception:
+        except Exception as e:
+            logger.error("TTS engine init failed: %s", e, exc_info=True)
             engine = None
     while True:
         text = _tts_q.get()
@@ -161,7 +182,8 @@ def _tts_worker():
             try:
                 engine.say(text)
                 engine.runAndWait()
-            except Exception:
+            except Exception as e:
+                logger.warning("TTS speak failed, reinitialising engine: %s", e)
                 try:
                     engine = pyttsx3.init()
                     engine.setProperty('rate', 165)
@@ -170,8 +192,8 @@ def _tts_worker():
                         engine.setProperty('voice', TTS_VOICE_ID)
                     engine.say(text)
                     engine.runAndWait()
-                except Exception:
-                    pass
+                except Exception as e2:
+                    logger.error("TTS reinit failed: %s", e2, exc_info=True)
         _tts_q.task_done()
 
 threading.Thread(target=_tts_worker, daemon=True).start()
@@ -236,7 +258,7 @@ def _calibrate_sounddevice():
         return
     try:
         info("Calibrating mic — stay quiet for 2 seconds...")
-        data = sd.rec(int(2.0 * SAMPLE_RATE), samplerate=SAMPLE_RATE,
+        data = sd.rec(int(CALIBRATION_SEC * SAMPLE_RATE), samplerate=SAMPLE_RATE,
                       channels=CHANNELS, dtype=DTYPE)
         sd.wait()
         _NOISE_RMS        = max(50, float(np.sqrt(np.mean(data.astype(np.float32) ** 2))))
@@ -267,9 +289,9 @@ def _record_until_silence(max_seconds=10):
     if not SOUNDDEVICE_AVAILABLE:
         return None
 
-    wait_chunks    = int(8 * 1000 / CHUNK_MS)       # wait up to 8s for speech
+    wait_chunks    = int(WAIT_FOR_SPEECH_SEC * 1000 / CHUNK_MS)
     max_chunks     = int(max_seconds * 1000 / CHUNK_MS)
-    silence_needed = int(800 / CHUNK_MS)             # 0.8s silence = done
+    silence_needed = int(SILENCE_DURATION_MS / CHUNK_MS)
 
     frames        = []
     silent_streak = 0
@@ -314,8 +336,12 @@ def _record_until_silence(max_seconds=10):
         return np.concatenate(frames, axis=0)
 
     except Exception as e:
-        try: stream.stop(); stream.close()
-        except Exception: pass
+        logger.error("VAD recording error: %s", e, exc_info=True)
+        try:
+            stream.stop()
+            stream.close()
+        except Exception:
+            pass
         err(f"Recording error: {e}")
         return None
 
@@ -372,6 +398,7 @@ def _init_porcupine():
         info("pvporcupine loaded — say 'porcupine' to wake (or get a custom 'hey pa' keyword).")
         return True
     except Exception as e:
+        logger.warning("pvporcupine init failed: %s", e)
         warn(f"pvporcupine init failed ({e}) — falling back to Google Speech wake word.")
         _porcupine_handle = None
         return False
@@ -400,7 +427,8 @@ def _porcupine_scan() -> bool:
         pcm_unpacked = struct.unpack_from("h" * _porcupine_handle.frame_length, pcm)
         result = _porcupine_handle.process(pcm_unpacked)
         return result >= 0  # >= 0 means wake word detected
-    except Exception:
+    except Exception as e:
+        logger.warning("pvporcupine scan error: %s", e)
         return False
 
 def _google_wake_scan() -> str:
@@ -416,9 +444,8 @@ def _google_wake_scan() -> str:
     if not SOUNDDEVICE_AVAILABLE:
         return "no_mic"
 
-    # Short 3s wait for wake word speech
-    wait_chunks    = int(3 * 1000 / CHUNK_MS)
-    silence_needed = int(600 / CHUNK_MS)
+    wait_chunks    = int(WAKE_SCAN_SEC * 1000 / CHUNK_MS)
+    silence_needed = int(WAKE_SILENCE_MS / CHUNK_MS)
     frames         = []
     silent_streak  = 0
     speech_count   = 0
@@ -436,7 +463,7 @@ def _google_wake_scan() -> str:
                 break
 
         if speech_count > 0:
-            for _ in range(int(2 * 1000 / CHUNK_MS)):
+            for _ in range(int(WAKE_SCAN_SEC * 1000 / CHUNK_MS)):
                 chunk, _ = stream.read(CHUNK_SAMPLES)
                 frames.append(chunk.copy())
                 if _rms(chunk) > _SPEECH_THRESHOLD:
@@ -466,11 +493,16 @@ def _google_wake_scan() -> str:
     except sr.UnknownValueError:
         return "nothing"
     except sr.RequestError as e:
+        logger.warning("Google Speech API error during wake scan: %s", e)
         err(f"Google Speech error: {e}")
         return "nothing"
     except Exception as e:
-        try: stream.stop(); stream.close()
-        except Exception: pass
+        logger.error("Wake scan unexpected error: %s", e, exc_info=True)
+        try:
+            stream.stop()
+            stream.close()
+        except Exception:
+            pass
         return "nothing"
 
 def scan_once() -> str:
@@ -655,27 +687,74 @@ def feat_open_chrome():
 def feat_open_email():
     speak("Opening Gmail."); webbrowser.open("https://mail.google.com")
 
+# ── SAFE MATH EVALUATOR (replaces eval) ───────────────────────────────────────
+_SAFE_OPS = {
+    ast.Add:  op.add,   ast.Sub:  op.sub,
+    ast.Mult: op.mul,   ast.Div:  op.truediv,
+    ast.Pow:  op.pow,   ast.Mod:  op.mod,
+    ast.USub: op.neg,   ast.UAdd: op.pos,
+    ast.FloorDiv: op.floordiv,
+}
+_SAFE_MATH_FNS = {
+    'sqrt': math.sqrt, 'floor': math.floor, 'ceil': math.ceil,
+    'log':  math.log,  'log10': math.log10,
+    'sin':  math.sin,  'cos':   math.cos,   'tan': math.tan,
+    'fabs': math.fabs, 'abs':   abs,        'round': round,
+}
+
+def _safe_eval_node(node):
+    """Recursively evaluate an AST node using only whitelisted operations."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
+        return node.value
+    if isinstance(node, ast.Num):          # Python < 3.8 compat
+        return node.n
+    if isinstance(node, ast.BinOp) and type(node.op) in _SAFE_OPS:
+        left  = _safe_eval_node(node.left)
+        right = _safe_eval_node(node.right)
+        return _SAFE_OPS[type(node.op)](left, right)
+    if isinstance(node, ast.UnaryOp) and type(node.op) in _SAFE_OPS:
+        return _SAFE_OPS[type(node.op)](_safe_eval_node(node.operand))
+    if isinstance(node, ast.Call):
+        fn_name = (node.func.id if isinstance(node.func, ast.Name)
+                   else node.func.attr if isinstance(node.func, ast.Attribute)
+                   else None)
+        if fn_name in _SAFE_MATH_FNS:
+            args = [_safe_eval_node(a) for a in node.args]
+            return _SAFE_MATH_FNS[fn_name](*args)
+    raise ValueError(f"Unsupported expression node: {ast.dump(node)}")
+
+def _safe_calculate(expr: str):
+    """Parse and evaluate a math expression with no use of eval()."""
+    tree = ast.parse(expr, mode='eval')
+    return _safe_eval_node(tree.body)
+
 def feat_calculate(cmd):
     expr = re.sub(r'\b(calculate|compute|what is|whats|evaluate|solve)\b','',cmd,flags=re.IGNORECASE).strip()
     expr = (expr.replace("plus","+").replace("minus","-").replace("times","*")
                .replace("multiplied by","*").replace("divided by","/")
                .replace("mod","%").replace("power","**").replace("^","**")
-               .replace("square root of","math.sqrt(").strip())
-    if "math.sqrt(" in expr and not expr.endswith(")"): expr += ")"
+               .replace("square root of","sqrt(").strip())
+    if "sqrt(" in expr and not expr.endswith(")"): expr += ")"
     if not expr: speak("Please give me a math expression."); return
-    if re.search(r'[a-zA-Z]',expr.replace("math","").replace("sqrt","")): speak("Numeric only."); return
     try:
-        res = eval(expr,{"__builtins__":{},"math":math})
-        if isinstance(res,float) and res==int(res): res=int(res)
+        res = _safe_calculate(expr)
+        if isinstance(res, float) and res == int(res): res = int(res)
         speak(f"The result is {res}"); info(f"{expr} = {res}")
     except ZeroDivisionError: speak("Cannot divide by zero.")
-    except Exception: speak("Couldn't evaluate that.")
+    except ValueError as e:
+        logger.warning("Calculator expression rejected: %s | expr: %s", e, expr)
+        speak("Couldn't evaluate that.")
+    except Exception as e:
+        logger.error("Calculator unexpected error: %s | expr: %s", e, expr, exc_info=True)
+        speak("Couldn't evaluate that.")
 
 def feat_screenshot():
     if not PYAUTOGUI_AVAILABLE: speak("Run: pip install pyautogui"); return
     fname = f"screenshot_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
     try: pyautogui.screenshot().save(fname); speak(f"Screenshot saved as {fname}.")
-    except Exception as e: speak(f"Screenshot failed: {e}")
+    except Exception as e:
+        logger.error("Screenshot failed: %s", e)
+        speak(f"Screenshot failed: {e}")
 
 def feat_system_info():
     if not PSUTIL_AVAILABLE: speak("Run: pip install psutil"); return
@@ -720,14 +799,18 @@ def feat_network():
 def feat_public_ip():
     if not REQUESTS_AVAILABLE: speak("Run: pip install requests"); return
     try: speak(f"Your public IP is {requests.get('https://api.ipify.org?format=json',timeout=6).json()['ip']}")
-    except Exception: speak("Could not fetch public IP.")
+    except Exception as e:
+        logger.warning("Public IP fetch failed: %s", e)
+        speak("Could not fetch public IP.")
 
 def feat_ping():
     if not REQUESTS_AVAILABLE: speak("Run: pip install requests"); return
     try:
         t0=time.perf_counter(); requests.get("https://www.google.com",timeout=5)
         speak(f"Ping to Google: {int((time.perf_counter()-t0)*1000)} ms")
-    except Exception: speak("Ping failed.")
+    except Exception as e:
+        logger.warning("Ping failed: %s", e)
+        speak("Ping failed.")
 
 def feat_lock():
     speak("Locking screen."); time.sleep(1)
@@ -813,8 +896,12 @@ def feat_wikipedia(cmd):
         speak(f"Too many results. Options: {', '.join(e.options[:3])}")
     except wikipedia.exceptions.PageError:
         try: speak(wikipedia.summary(query,sentences=3,auto_suggest=True))
-        except Exception: speak(f"Couldn't find {query}.")
-    except Exception as e: speak(f"Wikipedia error: {e}")
+        except Exception as e:
+            logger.warning("Wikipedia fallback search failed for '%s': %s", query, e)
+            speak(f"Couldn't find {query}.")
+    except Exception as e:
+        logger.warning("Wikipedia error for '%s': %s", query, e)
+        speak(f"Wikipedia error: {e}")
 
 def feat_define(cmd):
     word=re.sub(r'\b(define|definition|meaning of|what does|mean|dictionary)\b','',cmd,flags=re.IGNORECASE).strip()
@@ -825,7 +912,9 @@ def feat_define(cmd):
         r=requests.get(f"https://api.dictionaryapi.dev/api/v2/entries/en/{word}",timeout=6)
         if r.status_code==200: speak(f"{word}: {r.json()[0]['meanings'][0]['definitions'][0]['definition']}")
         else: speak(f"No definition found for {word}.")
-    except Exception: speak("Dictionary unavailable.")
+    except Exception as e:
+        logger.warning("Dictionary API error for '%s': %s", word, e)
+        speak("Dictionary unavailable.")
 
 def feat_weather(cmd=""):
     key=os.environ.get("OPENWEATHER_API_KEY","")
@@ -838,7 +927,9 @@ def feat_weather(cmd=""):
         if d.get("cod")!=404:
             speak(f"{city}: {d['main']['temp']:.1f}°C, {d['weather'][0]['description']}, feels like {d['main']['feels_like']:.1f}°C, humidity {d['main']['humidity']}%.")
         else: speak(f"City {city} not found.")
-    except Exception: speak("Weather unavailable.")
+    except Exception as e:
+        logger.warning("Weather API error for '%s': %s", city, e)
+        speak("Weather unavailable.")
 
 def feat_news():
     key=os.environ.get("NEWS_API_KEY","")
@@ -849,12 +940,14 @@ def feat_news():
             speak("Top 3 headlines:")
             for i,a in enumerate(d.get("articles",[])[:3],1): speak(f"{i}: {a.get('title','No title')}")
         else: speak("Could not fetch news.")
-    except Exception: speak("News unavailable.")
+    except Exception as e:
+        logger.warning("News API error: %s", e)
+        speak("News unavailable.")
 
 def feat_joke():
     if JOKES_AVAILABLE:
         try: speak(pyjokes.get_joke()); return
-        except Exception: pass
+        except Exception as e: logger.warning("pyjokes error: %s", e)
     speak(random.choice([
         "Why do programmers prefer dark mode? Because light attracts bugs!",
         "How many programmers to change a light bulb? None, that's a hardware problem.",
@@ -868,7 +961,7 @@ def feat_quote():
         try:
             r=requests.get("https://zenquotes.io/api/random",timeout=6)
             if r.status_code==200: d=r.json()[0]; speak(f"{d['q']} — {d['a']}"); return
-        except Exception: pass
+        except Exception as e: logger.warning("Quote API error: %s", e)
     speak(random.choice([
         "The only way to do great work is to love what you do. — Steve Jobs",
         "In the middle of difficulty lies opportunity. — Albert Einstein",
@@ -1068,21 +1161,33 @@ def dispatch(cmd):
     set_status("Waiting for wake word...",C['txt2'])
 
 # ── CONTROLLER ────────────────────────────────────────────────────────────────
-_running  = False
-_loop_thr = None
+_running      = False
+_running_lock = threading.Lock()   # protects _running across threads
+_loop_thr     = None
+
+def _is_running() -> bool:
+    with _running_lock:
+        return _running
+
+def _set_running(value: bool) -> None:
+    global _running
+    with _running_lock:
+        _running = value
 
 def start_pa():
-    global _running, _loop_thr
-    if _running: return
-    _running = True
+    global _loop_thr
+    with _running_lock:
+        global _running
+        if _running:
+            return
+        _running = True
     q(start_btn.config, state=tk.DISABLED, bg=C['txt2'])
     q(stop_btn.config,  state=tk.NORMAL,   bg=C['coral'])
     _loop_thr = threading.Thread(target=_main_loop, daemon=True)
     _loop_thr.start()
 
 def stop_pa():
-    global _running
-    _running = False
+    _set_running(False)
     start_btn.config(state=tk.NORMAL,   bg=C['mint'])
     stop_btn.config( state=tk.DISABLED, bg=C['txt2'])
     set_wake_led('idle')
@@ -1090,7 +1195,6 @@ def stop_pa():
     warn("PA stopped. Click Start to resume.")
 
 def _main_loop():
-    global _running
     feat_greet()
 
     if not _mic_available():
@@ -1098,7 +1202,8 @@ def _main_loop():
         set_status("No mic — use text input", C['orange'])
         q(start_btn.config, state=tk.NORMAL,   bg=C['mint'])
         q(stop_btn.config,  state=tk.DISABLED, bg=C['txt2'])
-        _running = False; return
+        _set_running(False)
+        return
 
     # Calibrate ONCE here — not inside any recording function
     if SOUNDDEVICE_AVAILABLE:
@@ -1113,17 +1218,17 @@ def _main_loop():
     else:
         info('Google Speech wake word active — say "hey pa" to wake PA.')
 
-    while _running:
+    while _is_running():
         set_status("Waiting for wake word...", C['txt2'])
         set_wake_led('scanning')
         q(_console_write, "\n  Listening for wake word...\n", "dim")
 
         woke = False
-        while _running:
+        while _is_running():
             result = scan_once()
             if result == "no_mic":
                 warn("Microphone disconnected.")
-                _running = False
+                _set_running(False)
                 q(start_btn.config, state=tk.NORMAL,   bg=C['mint'])
                 q(stop_btn.config,  state=tk.DISABLED, bg=C['txt2'])
                 break
@@ -1134,7 +1239,7 @@ def _main_loop():
                 q(_console_write, "[PA] Yes?\n", "pa")
                 woke = True; break
 
-        if not _running: break
+        if not _is_running(): break
         if not woke: continue
 
         _tts_q.join()
@@ -1142,8 +1247,8 @@ def _main_loop():
         set_wake_led('listening')
         q(_console_write, "  Listening for command...\n", "dim")
 
-        command = capture_voice(duration=6, wake_scan=False)
-        if not _running: break
+        command = capture_voice(duration=COMMAND_DURATION_SEC, wake_scan=False)
+        if not _is_running(): break
 
         if command and command != "NO_MIC":
             user_echo(command); dispatch(command)
