@@ -1,870 +1,594 @@
 #!/usr/bin/env python3
 """
-PA — Personal Assistant v2.3
-Wake word: pvporcupine (offline) with Google Speech fallback
-Install:
+Max — Personal Assistant v3.2
+Wake word : hey max  →  "Yes Rushindhra?"
+Fixes     : fuzzy corrections for ALL commands, single tab close, no double triggers
+INSTALL:
     pip install SpeechRecognition sounddevice numpy pyttsx3 psutil
-    pip install requests wikipedia pyjokes pyautogui
-    pip install pvporcupine  (optional but recommended for wake word)
+    pip install requests wikipedia pyjokes pyautogui pygetwindow
 """
 
-import datetime
-import webbrowser
-import os
-import threading
-import time
-import re
-import socket
-import queue
-import platform
-import subprocess
-import random
-import math
-import ast
-import operator as op
-import logging
+import datetime, webbrowser, os, threading, time, re, socket
+import queue, platform, subprocess, random, math
 import tkinter as tk
 import tkinter.messagebox as msgbox
 
-# ── OPTIONAL IMPORTS ──────────────────────────────────────────────────────────
-try:
-    import speech_recognition as sr
-    SR_AVAILABLE = True
-except ImportError:
-    SR_AVAILABLE = False
-    sr = None
+try:    import speech_recognition as sr;  SR_AVAILABLE = True
+except: SR_AVAILABLE = False;             sr = None
 
+SOUNDDEVICE_AVAILABLE = False
 try:
-    import sounddevice as sd
-    import numpy as np
+    import sounddevice as sd, numpy as np
     SOUNDDEVICE_AVAILABLE = True
-except ImportError:
-    SOUNDDEVICE_AVAILABLE = False
-    sd = None
-    np = None
+except: pass
 
-try:
-    import pyaudio
-    PYAUDIO_AVAILABLE = True
-except (ImportError, OSError):
-    PYAUDIO_AVAILABLE = False
+PYAUDIO_AVAILABLE = False
+try:    import pyaudio; PYAUDIO_AVAILABLE = True
+except: pass
 
-# pvporcupine — offline wake word engine (no internet needed)
-try:
-    import pvporcupine
-    PORCUPINE_AVAILABLE = True
-except ImportError:
-    PORCUPINE_AVAILABLE = False
-    pvporcupine = None
+try:    import pyttsx3;   TTS_AVAILABLE = True
+except: TTS_AVAILABLE = False
 
-try:
-    import pyttsx3
-    _tts_test        = pyttsx3.init()
-    _tts_voices_list = _tts_test.getProperty('voices') or []
-    TTS_VOICE_IDX    = 1 if len(_tts_voices_list) > 1 else 0
-    TTS_VOICE_ID     = _tts_voices_list[TTS_VOICE_IDX].id if _tts_voices_list else None
-    _tts_test.stop()
-    del _tts_test
-    TTS_AVAILABLE = True
-except Exception:
-    TTS_AVAILABLE = False
-    TTS_VOICE_ID  = None
+try:    import psutil;    PSUTIL_AVAILABLE = True
+except: PSUTIL_AVAILABLE = False; psutil = None
 
-try:
-    import psutil
-    PSUTIL_AVAILABLE = True
-except ImportError:
-    PSUTIL_AVAILABLE = False
-    psutil = None
+try:    import requests;  REQUESTS_AVAILABLE = True
+except: REQUESTS_AVAILABLE = False; requests = None
 
-try:
-    import requests
-    REQUESTS_AVAILABLE = True
-except ImportError:
-    REQUESTS_AVAILABLE = False
-    requests = None
+try:    import wikipedia; WIKI_AVAILABLE = True
+except: WIKI_AVAILABLE = False; wikipedia = None
 
-try:
-    import wikipedia
-    WIKI_AVAILABLE = True
-except ImportError:
-    WIKI_AVAILABLE = False
-    wikipedia = None
+try:    import pyjokes;   JOKES_AVAILABLE = True
+except: JOKES_AVAILABLE = False; pyjokes = None
 
-try:
-    import pyjokes
-    JOKES_AVAILABLE = True
-except ImportError:
-    JOKES_AVAILABLE = False
-    pyjokes = None
+try:    import pyautogui; PYAUTOGUI_AVAILABLE = True
+except: PYAUTOGUI_AVAILABLE = False; pyautogui = None
 
-try:
-    import pyautogui
-    PYAUTOGUI_AVAILABLE = True
-except ImportError:
-    PYAUTOGUI_AVAILABLE = False
-    pyautogui = None
+try:    import pygetwindow as gw; PYGETWINDOW_AVAILABLE = True
+except: PYGETWINDOW_AVAILABLE = False; gw = None
 
-# ── CONSTANTS ─────────────────────────────────────────────────────────────────
-VERSION       = "2.3"
-WAKE_WORD     = "hey pa"
-SAMPLE_RATE   = 16000          # Hz — microphone sample rate
-CHANNELS      = 1              # mono
-DTYPE         = 'int16'        # 16-bit PCM
-CHUNK_MS      = 30             # milliseconds per audio chunk
+VERSION   = "3.2"
+USER_NAME = "Rushindhra"
+WAKE_WORD = "hey max"
+WAKE_PHRASES = [
+    "hey max","hey macs","hey mac","hey marks","hey mark",
+    "hey marx","a max","okay max","ok max","hi max",
+    "hay max","aye max","max","hey man",
+]
+
+SAMPLE_RATE   = 16000
+CHANNELS      = 1
+DTYPE         = "int16"
+CHUNK_MS      = 30
 CHUNK_SAMPLES = int(SAMPLE_RATE * CHUNK_MS / 1000)
-
-# Voice activity detection tuning
-WAIT_FOR_SPEECH_SEC = 8        # max seconds to wait for speech to start
-SILENCE_DURATION_MS = 800      # ms of consecutive silence that ends recording
-WAKE_SCAN_SEC       = 3        # seconds to listen for wake word
-WAKE_SILENCE_MS     = 600      # ms of silence that ends wake-word capture
-COMMAND_DURATION_SEC = 6       # max seconds for command audio capture
-CALIBRATION_SEC     = 2        # seconds of silence for mic calibration
 
 IS_WINDOWS = platform.system() == "Windows"
 IS_LINUX   = platform.system() == "Linux"
 IS_MAC     = platform.system() == "Darwin"
 
-# ── LOGGING ───────────────────────────────────────────────────────────────────
-logging.basicConfig(
-    filename='pa_assistant.log',
-    level=logging.WARNING,
-    format='%(asctime)s %(levelname)s %(funcName)s: %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S',
-)
-logger = logging.getLogger('PA')
-
 C = {
-    'bg0':'#070B14','bg1':'#0C1220','bg2':'#111827','bg3':'#192338','bg4':'#1F2D47',
-    'gold':'#F5C518','gold_dim':'#8A6C0A','teal':'#00E5CC','violet':'#9B59FF',
-    'coral':'#FF5C5C','mint':'#39FF85','txt0':'#F0F6FF','txt1':'#8DA4C8',
-    'txt2':'#3D566E','border':'#1E3054','orange':'#FF8C30',
+    "bg0":"#070B14","bg1":"#0C1220","bg2":"#111827","bg3":"#192338","bg4":"#1F2D47",
+    "gold":"#F5C518","gold_dim":"#8A6C0A","teal":"#00E5CC","violet":"#9B59FF",
+    "coral":"#FF5C5C","mint":"#39FF85","txt0":"#F0F6FF","txt1":"#8DA4C8",
+    "txt2":"#3D566E","border":"#1E3054","orange":"#FF8C30",
 }
 FNT_BTN  = ("Helvetica Neue", 9, "bold")
 FNT_MONO = ("Courier New", 10)
 
-# ── GUI QUEUE ─────────────────────────────────────────────────────────────────
-gui_queue = queue.Queue()
+# ─────────────────────────────────────────────────────────────────────────────
+# FUZZY CORRECTIONS — every command Google Speech might mishear
+# Format:  "what google hears" : "correct keyword"
+# Add new ones anytime you see a failed Heard: line in the console
+# ─────────────────────────────────────────────────────────────────────────────
+FUZZY_CORRECTIONS = {
 
-def q(fn, *args):
-    gui_queue.put((fn, args))
+    # ── SITES ────────────────────────────────────────────────────────────────
+    # chatgpt
+    "charging ppt":"chatgpt","charge ppt":"chatgpt","chat gpt":"chatgpt",
+    "charging pt":"chatgpt","chargingppt":"chatgpt","charging bt":"chatgpt",
+    "chat gt":"chatgpt","charge gt":"chatgpt","charging gpt":"chatgpt",
+    "sharjah ppt":"chatgpt","chart ppt":"chatgpt","sharp pt":"chatgpt",
+    "charging pp":"chatgpt","charting ppt":"chatgpt","chat dpt":"chatgpt",
+    # gemini
+    "jemini":"gemini","jimini":"gemini","jimmy":"gemini","jamini":"gemini",
+    "germini":"gemini","jimmie":"gemini","jemmy":"gemini","gimini":"gemini",
+    "ge mini":"gemini","jay mini":"gemini",
+    # youtube
+    "you tube":"youtube","utube":"youtube","u tube":"youtube","you to":"youtube",
+    "you too":"youtube","youth":"youtube","eu tube":"youtube",
+    # whatsapp
+    "what's app":"whatsapp","what sapp":"whatsapp","watsapp":"whatsapp",
+    "whats up":"whatsapp","what sup":"whatsapp","what's up":"whatsapp",
+    "what's ab":"whatsapp","what app":"whatsapp",
+    # instagram
+    "insta gram":"instagram","insta":"instagram","instant gram":"instagram",
+    "instagram ram":"instagram","in stagram":"instagram",
+    # linkedin
+    "linked in":"linkedin","lincoln":"linkedin","linked inn":"linkedin",
+    "link din":"linkedin","link dein":"linkedin","linkin":"linkedin",
+    # github
+    "git hub":"github","give hub":"github","git up":"github",
+    "git hub":"github","get hub":"github","give up":"github",
+    # stackoverflow
+    "stack overflow":"stackoverflow","stack over flow":"stackoverflow",
+    "stack overflows":"stackoverflow",
+    # discord
+    "disk cord":"discord","this cord":"discord","disc cord":"discord",
+    "dis cord":"discord","this court":"discord",
+    # spotify
+    "spot if i":"spotify","spot ify":"spotify","spot a fly":"spotify",
+    "spot fire":"spotify","spot ifi":"spotify",
+    # notion
+    "no shun":"notion","no tion":"notion","ocean":"notion","noshun":"notion",
+    # netflix
+    "net flix":"netflix","net flex":"netflix","net flicks":"netflix",
+    # google maps
+    "google map":"maps","google maps":"maps","g maps":"maps",
+    # google drive
+    "google drive":"drive","g drive":"drive",
+    # google meet
+    "google meet":"meet","g meet":"meet",
+    # google docs
+    "google docs":"docs","g docs":"docs",
+    # google sheets
+    "google sheets":"sheets","g sheets":"sheets",
+    # amazon
+    "amaz on":"amazon","amazone":"amazon",
+    # reddit
+    "red it":"reddit","red dit":"reddit",
+    # twitter
+    "twit er":"twitter","twitt er":"twitter",
 
-def flush_gui():
-    try:
-        while True:
-            fn, args = gui_queue.get_nowait()
-            fn(*args)
-    except queue.Empty:
-        pass
-    ROOT.after(40, flush_gui)
+    # ── APPS ─────────────────────────────────────────────────────────────────
+    # vs code
+    "be s code":"vscode","vs cold":"vscode","the s code":"vscode",
+    "vs co":"vscode","visual studio code":"vscode","visual studio":"vscode",
+    "be escort":"vscode","visa code":"vscode","vs court":"vscode",
+    "bs code":"vscode","v s code":"vscode",
+    # powerpoint
+    "power point":"powerpoint","power pnt":"powerpoint","power pint":"powerpoint",
+    "power points":"powerpoint","ppt":"powerpoint",
+    # notepad
+    "note pad":"notepad","notes pad":"notepad","noted":"notepad",
+    "note path":"notepad","not pad":"notepad",
+    # calculator
+    "calculate or":"calculator","calculated":"calculator",
+    "calculation":"calculator","calculater":"calculator",
+    # task manager
+    "task manage":"task manager","tasks manager":"task manager",
+    "task manger":"task manager",
+    # file explorer
+    "file explorer":"explorer","files explorer":"explorer",
+    "file manager":"explorer",
+    # firefox
+    "fire fox":"firefox","fire fo":"firefox",
+    # edge
+    "microsoft edge":"edge","ms edge":"edge",
+    # paint
+    "ms paint":"paint","microsoft paint":"paint",
+    # word
+    "microsoft word":"word","ms word":"word",
+    # excel
+    "microsoft excel":"excel","ms excel":"excel",
+    # chrome
+    "google chrome":"chrome","g chrome":"chrome",
 
-# ── TTS WORKER ────────────────────────────────────────────────────────────────
+    # ── TIME / DATE ───────────────────────────────────────────────────────────
+    "what's the time":"what time","what is the time":"what time",
+    "current time":"what time","tell me the time":"what time",
+    "what's the date":"what date","what is the date":"what date",
+    "current date":"what date","tell me the date":"what date",
+    "todays date":"what date","today's date":"what date",
+    "date and time":"date and time","time and date":"date and time",
+
+    # ── SEARCH ───────────────────────────────────────────────────────────────
+    "google search":"search","search for":"search","look up":"search",
+    "can you search":"search","please search":"search",
+    "youtube search":"youtube search","search youtube":"youtube search",
+    "play on youtube":"youtube search","find on youtube":"youtube search",
+
+    # ── CALCULATE ────────────────────────────────────────────────────────────
+    "calculation":"calculate","solve this":"calculate","compute":"calculate",
+    "what is the answer":"calculate","math":"calculate",
+    "what's 2 plus 2":"calculate 2 plus 2",
+
+    # ── SCREENSHOT ───────────────────────────────────────────────────────────
+    "screen shot":"screenshot","screen short":"screenshot",
+    "take screen":"screenshot","capture screen":"screenshot",
+    "screen capture":"screenshot","print screen":"screenshot",
+
+    # ── SYSTEM INFO ──────────────────────────────────────────────────────────
+    "system and for":"system info","system information":"system info",
+    "system details":"system info","show system":"system info",
+    # cpu
+    "cp you":"cpu","see p you":"cpu","cpu usage":"cpu",
+    "processor":"cpu","processor usage":"cpu",
+    # ram
+    "ram usage":"ram","memory usage":"ram","ram memory":"ram",
+    # disk
+    "disk space":"disk","disk usage":"disk","hard disk":"disk",
+    "storage":"disk","hard drive":"disk",
+    # battery
+    "battery level":"battery","battery status":"battery","batteries":"battery",
+    "battery percentage":"battery","how much battery":"battery",
+    # processes
+    "running processes":"processes","top processes":"processes",
+    "active processes":"processes","process list":"processes",
+
+    # ── NETWORK ──────────────────────────────────────────────────────────────
+    "network information":"network info","network status":"network info",
+    "local ip":"network info","hostname":"network info",
+    "my ip address":"my ip","what is my ip":"my ip","ip address":"my ip",
+    "public ip address":"my ip","external ip":"my ip",
+    "ping test":"ping","test ping":"ping","test connection":"ping",
+    "check internet":"ping","internet speed":"ping",
+
+    # ── POWER ────────────────────────────────────────────────────────────────
+    # lock
+    "lock the screen":"lock screen","lock my screen":"lock screen",
+    "screen lock":"lock screen","lock the computer":"lock screen",
+    # sleep
+    "go to sleep":"sleep","put to sleep":"sleep","hibernate":"sleep",
+    "suspend":"sleep",
+    # shutdown
+    "shut down":"shutdown","turn off":"shutdown","power off":"shutdown",
+    "switch off":"shutdown","shut it down":"shutdown",
+    # restart
+    "re start":"restart","re boot":"restart","start again":"restart",
+    # logout
+    "log out":"logout","sign out":"logout","log me out":"logout",
+    "switch user":"logout",
+
+    # ── WIKIPEDIA ────────────────────────────────────────────────────────────
+    "wiki pedia":"wikipedia","wikki":"wikipedia","wickipedia":"wikipedia",
+    "wiki search":"wikipedia","search wikipedia":"wikipedia",
+    "tell me about":"wikipedia","what is":"wikipedia","who is":"wikipedia",
+
+    # ── DICTIONARY ───────────────────────────────────────────────────────────
+    "definition of":"define","meaning of":"define","what does":"define",
+    "dictionary":"define","look up word":"define","define the word":"define",
+
+    # ── WEATHER ──────────────────────────────────────────────────────────────
+    "weather today":"weather","today's weather":"weather",
+    "temperature outside":"weather","what's the weather":"weather",
+    "how's the weather":"weather","weather forecast":"weather",
+    "weather report":"weather",
+
+    # ── NEWS ─────────────────────────────────────────────────────────────────
+    "latest news":"news","today's news":"news","news update":"news",
+    "what's in the news":"news","current news":"news","top headlines":"news",
+    "news headlines":"news",
+
+    # ── VOLUME ───────────────────────────────────────────────────────────────
+    "volume up":"volume up","turn up volume":"volume up",
+    "increase volume":"volume up","louder":"volume up",
+    "volume down":"volume down","turn down volume":"volume down",
+    "decrease volume":"volume down","quieter":"volume down",
+    "mute the sound":"mute","turn off sound":"mute","silence":"mute",
+    "unmute the sound":"unmute","turn on sound":"unmute",
+    "what is the volume":"volume","current volume":"volume",
+
+    # ── TIMER ────────────────────────────────────────────────────────────────
+    "set a timer":"set timer","start a timer":"set timer",
+    "start timer":"set timer","create timer":"set timer",
+    "countdown":"set timer","timer for":"set timer",
+
+    # ── ALARM ────────────────────────────────────────────────────────────────
+    "set an alarm":"set alarm","start an alarm":"set alarm",
+    "create alarm":"set alarm","alarm for":"set alarm",
+    "wake me up":"set alarm","wake me at":"set alarm",
+
+    # ── NOTE ─────────────────────────────────────────────────────────────────
+    "create a note":"create note","take a note":"create note",
+    "new note":"create note","open note":"create note",
+    "make a note":"create note","write a note":"create note",
+    "quick note":"create note","note down":"create note",
+
+    # ── CLIPBOARD ────────────────────────────────────────────────────────────
+    "what's in clipboard":"clipboard","show clipboard":"clipboard",
+    "read clipboard":"clipboard","paste content":"clipboard",
+    "clear the clipboard":"clear clipboard","empty clipboard":"clear clipboard",
+
+    # ── FUN ──────────────────────────────────────────────────────────────────
+    # joke
+    "tell a joke":"joke","say a joke":"joke","give me a joke":"joke",
+    "make me laugh":"joke","funny joke":"joke","crack a joke":"joke",
+    # quote
+    "give me a quote":"quote","motivate me":"quote","inspire me":"quote",
+    "motivation":"quote","inspiration":"quote","inspirational quote":"quote",
+    # coin
+    "flip a coin":"flip coin","toss a coin":"flip coin",
+    "heads or tails":"flip coin","coin toss":"flip coin",
+    # dice
+    "roll a dice":"roll dice","roll a die":"roll dice","roll the dice":"roll dice",
+    "random number":"roll dice","pick a number":"roll dice",
+
+    # ── TRANSLATE ────────────────────────────────────────────────────────────
+    "translation":"translate","translator":"translate",
+    "translate this":"translate","convert language":"translate",
+    "language translate":"translate",
+
+    # ── FILES ────────────────────────────────────────────────────────────────
+    "show files":"list files","show all files":"list files",
+    "what files":"list files","display files":"list files",
+    "files here":"list files","current files":"list files",
+
+    # ── CHAT ─────────────────────────────────────────────────────────────────
+    "hey there":"hello","hi there":"hello","hello max":"hello",
+    "how are you doing":"how are you","how do you do":"how are you",
+    "are you okay":"how are you","how is it going":"how are you",
+    "what's your name":"who are you","what are you":"who are you",
+    "tell me about yourself":"who are you",
+    "thank you max":"thank you","thanks max":"thank you",
+    "thank you so much":"thank you","many thanks":"thank you",
+    "what can you do":"help","show commands":"help","show help":"help",
+    "list commands":"help","available commands":"help",
+    "bye max":"goodbye","goodbye max":"goodbye","see you":"goodbye",
+    "see you later":"goodbye","exit":"goodbye","quit":"goodbye",
+
+# ── HELP ─────────────────────────────────────────────────────────────────────
+"halp":"help","helf":"help","hep":"help","kelp":"help","hepl":"help",
+"hulp":"help","hilp":"help","holp":"help","hel":"help","heip":"help",
+"hlp":"help","hlep":"help","hlp":"help","h e l p":"help",
+"help me":"help","show help":"help","show commands":"help",
+"list commands":"help","available commands":"help",
+"what can you do":"help","what do you do":"help",
+"what commands":"help","all commands":"help","give me help":"help",
+"i need help":"help","can you help":"help","please help":"help",
+"tell me commands":"help","show me commands":"help",
+"what are your commands":"help","how to use":"help",
+"instructions":"help","guide":"help","manual":"help",
+"features":"help","capabilities":"help",
+"what can max do":"help","max commands":"help","max help":"help",
+"commands list":"help","helper":"help","helping":"help","helps":"help",
+
+    # ── CLOSE ────────────────────────────────────────────────────────────────
+    "close the tab":"close","shut the tab":"close","kill the tab":"close",
+    "close this tab":"close","close tab":"close",
+}
+
+def _fuzzy_correct(text):
+    """
+    Auto-correct Google Speech mishearings before dispatching.
+    Shows dim correction line in console so you know what was fixed.
+    If nothing matches, returns original text unchanged.
+    """
+    t = text.lower().strip()
+    # sort by length descending so longer phrases match before shorter ones
+    for wrong in sorted(FUZZY_CORRECTIONS.keys(), key=len, reverse=True):
+        if wrong in t:
+            correct = FUZZY_CORRECTIONS[wrong]
+            fixed = t.replace(wrong, correct)
+            if fixed != t:
+                _gui(_cwrite, f"  [corrected] '{wrong}' → '{correct}'\n", "dim")
+            return fixed
+    return t
+
+# ── TTS worker ────────────────────────────────────────────────────────────────
 _tts_q = queue.Queue()
 
 def _tts_worker():
+    if not TTS_AVAILABLE:
+        while True: _tts_q.get(); _tts_q.task_done()
     engine = None
-    if TTS_AVAILABLE:
-        try:
-            engine = pyttsx3.init()
-            engine.setProperty('rate', 165)
-            engine.setProperty('volume', 1.0)
-            if TTS_VOICE_ID:
-                engine.setProperty('voice', TTS_VOICE_ID)
-        except Exception as e:
-            logger.error("TTS engine init failed: %s", e, exc_info=True)
-            engine = None
     while True:
         text = _tts_q.get()
-        if text is None:
-            break
-        if engine:
+        if text is None: _tts_q.task_done(); break
+        if engine is None:
             try:
-                engine.say(text)
-                engine.runAndWait()
-            except Exception as e:
-                logger.warning("TTS speak failed, reinitialising engine: %s", e)
-                try:
-                    engine = pyttsx3.init()
-                    engine.setProperty('rate', 165)
-                    engine.setProperty('volume', 1.0)
-                    if TTS_VOICE_ID:
-                        engine.setProperty('voice', TTS_VOICE_ID)
-                    engine.say(text)
-                    engine.runAndWait()
-                except Exception as e2:
-                    logger.error("TTS reinit failed: %s", e2, exc_info=True)
+                engine = pyttsx3.init()
+                engine.setProperty("rate", 155)
+                engine.setProperty("volume", 1.0)
+                voices = engine.getProperty("voices") or []
+                if len(voices) > 1: engine.setProperty("voice", voices[1].id)
+            except: engine = None
+        if engine:
+            try: engine.say(text); engine.runAndWait()
+            except: engine = None
         _tts_q.task_done()
 
 threading.Thread(target=_tts_worker, daemon=True).start()
 
-# ── OUTPUT ────────────────────────────────────────────────────────────────────
-def speak(text, tts=True):
-    ts = datetime.datetime.now().strftime("%H:%M:%S")
-    q(_console_write, f"[{ts}] PA: {text}\n", "pa")
-    if tts and TTS_AVAILABLE:
-        _tts_q.put(text)
+# ── GUI queue ─────────────────────────────────────────────────────────────────
+_gui_q = queue.Queue()
+def _gui(fn, *args): _gui_q.put((fn, args))
+def _flush_gui():
+    try:
+        while True:
+            fn, args = _gui_q.get_nowait(); fn(*args)
+    except queue.Empty: pass
+    ROOT.after(40, _flush_gui)
 
-def user_echo(text):
-    ts = datetime.datetime.now().strftime("%H:%M:%S")
-    q(_console_write, f"[{ts}] You: {text}\n", "user")
-
-def info(text):    q(_console_write, f"  i  {text}\n", "info")
-def warn(text):    q(_console_write, f"  !  {text}\n", "warn")
-def err(text):     q(_console_write, f"  x  {text}\n", "err")
-def success(text): q(_console_write, f"  ok  {text}\n", "ok")
-
-def _console_write(text, tag="normal"):
+def _cwrite(text, tag="normal"):
     console.config(state=tk.NORMAL)
     console.insert(tk.END, text, tag)
     console.see(tk.END)
     console.config(state=tk.DISABLED)
 
-def set_status(text, color=None):
-    q(_do_set_status, text, color or C['teal'])
+def speak(text):
+    ts = datetime.datetime.now().strftime("%H:%M:%S")
+    _gui(_cwrite, f"[{ts}] MAX: {text}\n", "pa")
+    _tts_q.put(text)
 
-def _do_set_status(text, color):
-    status_var.set(text)
-    status_lbl.config(fg=color)
+def user_echo(text):
+    ts = datetime.datetime.now().strftime("%H:%M:%S")
+    _gui(_cwrite, f"[{ts}] {USER_NAME}: {text}\n", "user")
+
+def info(t):  _gui(_cwrite, f"  i  {t}\n", "info")
+def warn(t):  _gui(_cwrite, f"  !  {t}\n", "warn")
+def err(t):   _gui(_cwrite, f"  x  {t}\n", "err")
+
+def set_status(text, color=None):
+    _gui(_do_status, text, color or C["teal"])
+def _do_status(text, color):
+    status_var.set(text); status_lbl.config(fg=color)
 
 def set_wake_led(state):
-    q(_do_wake_led, state)
+    _gui(_do_led, state)
+def _do_led(state):
+    S = {"idle":("IDLE",C["txt2"]),"scanning":("SCANNING",C["gold"]),
+         "heard":("WAKE!",C["mint"]),"listening":("LISTENING",C["coral"])}
+    t, c = S.get(state, S["idle"])
+    wake_led.config(text=t, fg=c)
 
-def _do_wake_led(state):
-    styles = {
-        'idle':      ("IDLE",      C['txt2']),
-        'scanning':  ("SCANNING",  C['gold']),
-        'heard':     ("WAKE!",     C['mint']),
-        'listening': ("LISTENING", C['coral']),
-    }
-    txt, col = styles.get(state, styles['idle'])
-    wake_led.config(text=txt, fg=col)
+# ── mic ───────────────────────────────────────────────────────────────────────
+_SPEECH_THRESHOLD = 150
+_CALIBRATED       = False
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  CALIBRATION — called ONCE at startup, no duplicate calls
-# ══════════════════════════════════════════════════════════════════════════════
-_NOISE_RMS          = 100
-_SPEECH_THRESHOLD   = 200
-_AMBIENT_CALIBRATED = False
-
-def _calibrate_sounddevice():
-    """
-    Record 2 seconds of silence to measure background noise.
-    Sets _NOISE_RMS and _SPEECH_THRESHOLD.
-    Called exactly ONCE from _main_loop at startup.
-    """
-    global _NOISE_RMS, _SPEECH_THRESHOLD, _AMBIENT_CALIBRATED
-    if _AMBIENT_CALIBRATED or not SOUNDDEVICE_AVAILABLE:
-        return
+def _calibrate():
+    global _SPEECH_THRESHOLD, _CALIBRATED
+    if _CALIBRATED or not SOUNDDEVICE_AVAILABLE: return
     try:
-        info("Calibrating mic — stay quiet for 2 seconds...")
-        data = sd.rec(int(CALIBRATION_SEC * SAMPLE_RATE), samplerate=SAMPLE_RATE,
-                      channels=CHANNELS, dtype=DTYPE)
+        info("Calibrating mic — stay quiet 1 s...")
+        data = sd.rec(SAMPLE_RATE, samplerate=SAMPLE_RATE, channels=1, dtype=DTYPE)
         sd.wait()
-        _NOISE_RMS        = max(30, float(np.sqrt(np.mean(data.astype(np.float32) ** 2))))
-        _SPEECH_THRESHOLD = max(100, int(_NOISE_RMS * 2.5))
-        _AMBIENT_CALIBRATED = True
-        info(f"Calibrated. Noise RMS={_NOISE_RMS:.0f}  Speech threshold={_SPEECH_THRESHOLD}")
+        rms = max(50, float(np.sqrt(np.mean(data.astype(np.float32)**2))))
+        _SPEECH_THRESHOLD = min(400, max(80, int(rms * 1.1)))
+        _CALIBRATED = True
+        info(f"Calibrated — threshold {_SPEECH_THRESHOLD}")
     except Exception as e:
-        warn(f"Calibration failed ({e}) — using defaults.")
-        _NOISE_RMS        = 100
-        _SPEECH_THRESHOLD = 200
-        _AMBIENT_CALIBRATED = True
+        warn(f"Calibration failed: {e}"); _SPEECH_THRESHOLD = 150; _CALIBRATED = True
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  VAD RECORDING — fixed, no silent audio sent to Google
-# ══════════════════════════════════════════════════════════════════════════════
 def _rms(chunk):
-    return float(np.sqrt(np.mean(chunk.astype(np.float32) ** 2)))
+    return float(np.sqrt(np.mean(chunk.astype(np.float32)**2)))
 
-def _record_until_silence(max_seconds=10):
-    """
-    Phase 1 — wait until mic RMS exceeds _SPEECH_THRESHOLD (real speech).
-    Phase 2 — record until 0.8s consecutive silence OR max_seconds reached.
-    Returns numpy int16 array of ONLY the spoken audio, or None if nothing heard.
-
-    FIX: This function is called correctly — calibration runs separately
-         before this, not inside this function.
-    """
-    if not SOUNDDEVICE_AVAILABLE:
-        return None
-
-    wait_chunks    = int(WAIT_FOR_SPEECH_SEC * 1000 / CHUNK_MS)
-    max_chunks     = int(max_seconds * 1000 / CHUNK_MS)
-    silence_needed = int(SILENCE_DURATION_MS / CHUNK_MS)
-
-    frames        = []
-    silent_streak = 0
-    speech_count  = 0
-
+def _record_speech(max_sec=12):
+    if not SOUNDDEVICE_AVAILABLE: return None
+    silence_needed = int(800 / CHUNK_MS)
+    frames = []; streak = 0; count = 0
     try:
-        stream = sd.InputStream(samplerate=SAMPLE_RATE, channels=CHANNELS,
-                                dtype=DTYPE, blocksize=CHUNK_SAMPLES)
-        stream.start()
-
-        # ── Phase 1: wait for speech ──────────────────────────────────────
-        for _ in range(wait_chunks):
-            chunk, _ = stream.read(CHUNK_SAMPLES)
-            if _rms(chunk) > _SPEECH_THRESHOLD:
-                frames.append(chunk.copy())
-                speech_count = 1
-                break   # speech detected, move to phase 2
-
-        if speech_count == 0:
-            stream.stop()
-            stream.close()
-            return None   # nothing spoken within wait time
-
-        # ── Phase 2: record until silence ────────────────────────────────
-        for _ in range(max_chunks):
-            chunk, _ = stream.read(CHUNK_SAMPLES)
-            frames.append(chunk.copy())
-            if _rms(chunk) > _SPEECH_THRESHOLD:
-                silent_streak = 0
-                speech_count += 1
-            else:
-                silent_streak += 1
-                if silent_streak >= silence_needed:
-                    break
-
-        stream.stop()
-        stream.close()
-
-        if speech_count < 2:
-            return None   # too short, likely noise
-
-        return np.concatenate(frames, axis=0)
-
-    except Exception as e:
-        logger.error("VAD recording error: %s", e, exc_info=True)
-        try:
-            stream.stop()
-            stream.close()
-        except Exception:
-            pass
-        err(f"Recording error: {e}")
-        return None
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  WAKE WORD — pvporcupine (offline) with strict Google Speech fallback
-# ══════════════════════════════════════════════════════════════════════════════
-
-# ── CHANGE 1: strict _is_wake_phrase — no false triggers on just "pa" or "hey"
-def _is_wake_phrase(text: str) -> bool:
-    """
-    Returns True if the recognised text contains the wake phrase.
-    Supports "hey pa" and its common mishearings, plus the simple
-    word "wake" so the user can just say "wake" to activate PA.
-    """
-    if not text:
-        return False
-    t = text.lower().strip()
-
-    wake_phrases = [
-        # Primary wake word
-        "hey pa", "hey p a", "heypa",
-        # Mishearings of "hey pa"
-        "okay pa", "ok pa", "hey pee ay",
-        "hay pa",  "aye pa", "hey par",
-        "a pa",    "hey pea", "hey pie",
-        "hey pas", "hepa",
-        # Simple single-word trigger — user can just say "wake"
-        "wake",
-    ]
-    for phrase in wake_phrases:
-        if phrase in t:
-            logger.info("Wake phrase matched '%s' in: %s", phrase, t)
-            return True
-
-    logger.debug("Wake scan heard '%s' — no match", text)
-    return False
-
-# ── CHANGE 2: pvporcupine offline wake word engine ────────────────────────────
-_porcupine_handle = None
-
-def _init_porcupine():
-    """
-    Try to initialise pvporcupine with the built-in 'porcupine' keyword
-    (says "porcupine" to wake). For "hey pa" you need a custom keyword file
-    from https://console.picovoice.ai/ — free account required.
-
-    Falls back to Google Speech wake word scanning if not available.
-    """
-    global _porcupine_handle
-    if not PORCUPINE_AVAILABLE:
-        return False
-    try:
-        # Uses built-in keyword 'porcupine' as demo.
-        # Replace keyword_paths=['/path/to/hey-pa.ppn'] once you have
-        # a custom keyword file from https://console.picovoice.ai/
-        _porcupine_handle = pvporcupine.create(keywords=["porcupine"])
-        info("pvporcupine loaded — say 'porcupine' to wake (or get a custom 'hey pa' keyword).")
-        return True
-    except Exception as e:
-        logger.warning("pvporcupine init failed: %s", e)
-        warn(f"pvporcupine init failed ({e}) — falling back to Google Speech wake word.")
-        _porcupine_handle = None
-        return False
-
-def _porcupine_scan() -> bool:
-    """
-    Listen for one frame using pvporcupine.
-    Returns True if wake word detected, False otherwise.
-    pvporcupine is OFFLINE — no internet needed, near-zero CPU.
-    """
-    if _porcupine_handle is None or not PYAUDIO_AVAILABLE:
-        return False
-    try:
-        pa  = pyaudio.PyAudio()
-        stream = pa.open(
-            rate=_porcupine_handle.sample_rate,
-            channels=1,
-            format=pyaudio.paInt16,
-            input=True,
-            frames_per_buffer=_porcupine_handle.frame_length,
-        )
-        pcm = stream.read(_porcupine_handle.frame_length, exception_on_overflow=False)
-        stream.stop_stream(); stream.close(); pa.terminate()
-
-        import struct
-        pcm_unpacked = struct.unpack_from("h" * _porcupine_handle.frame_length, pcm)
-        result = _porcupine_handle.process(pcm_unpacked)
-        return result >= 0  # >= 0 means wake word detected
-    except Exception as e:
-        logger.warning("pvporcupine scan error: %s", e)
-        return False
-
-def _google_wake_scan() -> str:
-    """
-    Single wake scan using sounddevice + Google Speech.
-    Returns: 'woke' | 'nothing' | 'no_mic'
-    """
-    if not _mic_available():
-        return "no_mic"
-    if not SR_AVAILABLE:
-        return "no_mic"
-
-    if not SOUNDDEVICE_AVAILABLE:
-        return "no_mic"
-
-    wait_chunks    = int(WAKE_SCAN_SEC * 1000 / CHUNK_MS)
-    silence_needed = int(WAKE_SILENCE_MS / CHUNK_MS)
-    frames         = []
-    silent_streak  = 0
-    speech_count   = 0
-
-    try:
-        stream = sd.InputStream(samplerate=SAMPLE_RATE, channels=CHANNELS,
-                                dtype=DTYPE, blocksize=CHUNK_SAMPLES)
-        stream.start()
-
-        for _ in range(wait_chunks):
-            chunk, _ = stream.read(CHUNK_SAMPLES)
-            if _rms(chunk) > _SPEECH_THRESHOLD:
-                frames.append(chunk.copy())
-                speech_count = 1
-                break
-
-        if speech_count > 0:
-            for _ in range(int(WAKE_SCAN_SEC * 1000 / CHUNK_MS)):
-                chunk, _ = stream.read(CHUNK_SAMPLES)
-                frames.append(chunk.copy())
-                if _rms(chunk) > _SPEECH_THRESHOLD:
-                    silent_streak = 0
-                    speech_count += 1
+        s = sd.InputStream(samplerate=SAMPLE_RATE, channels=1,
+                           dtype=DTYPE, blocksize=CHUNK_SAMPLES)
+        s.start()
+        for _ in range(int(8000/CHUNK_MS)):
+            c, _ = s.read(CHUNK_SAMPLES)
+            if _rms(c) > _SPEECH_THRESHOLD: frames.append(c.copy()); count = 1; break
+        if count:
+            for _ in range(int(max_sec*1000/CHUNK_MS)):
+                c, _ = s.read(CHUNK_SAMPLES); frames.append(c.copy())
+                if _rms(c) > _SPEECH_THRESHOLD: streak = 0; count += 1
                 else:
-                    silent_streak += 1
-                    if silent_streak >= silence_needed:
-                        break
+                    streak += 1
+                    if streak >= silence_needed: break
+        s.stop(); s.close()
+        return np.concatenate(frames) if count >= 1 else None
+    except Exception as e: err(f"Record error: {e}"); return None
 
-        stream.stop(); stream.close()
+def _google(audio_data):
+    try:    return sr.Recognizer().recognize_google(audio_data)
+    except sr.UnknownValueError: return None
+    except sr.RequestError as e: err(f"Speech API: {e}"); return None
 
-        if speech_count < 2 or not frames:
-            return "nothing"
+def _mic_ok(): return SOUNDDEVICE_AVAILABLE or PYAUDIO_AVAILABLE
 
-        audio = sr.AudioData(np.concatenate(frames, axis=0).tobytes(), SAMPLE_RATE, 2)
-        r     = sr.Recognizer()
-        text  = r.recognize_google(audio)
+def _is_wake(text):
+    if not text: return False
+    t = text.lower().strip()
+    for p in WAKE_PHRASES:
+        if p in t: return True
+    return bool(re.search(r"\bmax\b", t))
 
-        # CHANGE 3: debug print for wake word heard
-        print(f"[Wake scan] Heard: '{text}'")
-
-        if _is_wake_phrase(text):
-            return "woke"
+def scan_once():
+    if not SR_AVAILABLE or not SOUNDDEVICE_AVAILABLE: return "no_mic"
+    s = None; frames = []; count = 0; streak = 0
+    silence = int(800 / CHUNK_MS)
+    try:
+        s = sd.InputStream(samplerate=SAMPLE_RATE, channels=1,
+                           dtype=DTYPE, blocksize=CHUNK_SAMPLES)
+        s.start()
+        for _ in range(int(6000/CHUNK_MS)):
+            c, _ = s.read(CHUNK_SAMPLES)
+            if _rms(c) > _SPEECH_THRESHOLD: frames.append(c.copy()); count = 1; break
+        if count:
+            for _ in range(int(4000/CHUNK_MS)):
+                c, _ = s.read(CHUNK_SAMPLES); frames.append(c.copy())
+                if _rms(c) > _SPEECH_THRESHOLD: streak = 0; count += 1
+                else:
+                    streak += 1
+                    if streak >= silence: break
+        s.stop(); s.close(); s = None
+        if count < 1 or not frames: return "nothing"
+        audio = sr.AudioData(np.concatenate(frames).tobytes(), SAMPLE_RATE, 2)
+        text  = _google(audio)
+        if text:
+            _gui(_cwrite, f"  [wake] heard: '{text}'\n", "dim")
+            return "woke" if _is_wake(text) else "nothing"
         return "nothing"
+    except Exception as ex:
+        if s:
+            try: s.stop(); s.close()
+            except: pass
+        err(f"Wake error: {ex}"); return "nothing"
 
-    except sr.UnknownValueError:
-        return "nothing"
-    except sr.RequestError as e:
-        logger.warning("Google Speech API error during wake scan: %s", e)
-        err(f"Google Speech error: {e}")
-        return "nothing"
-    except Exception as e:
-        logger.error("Wake scan unexpected error: %s", e, exc_info=True)
-        try:
-            stream.stop()
-            stream.close()
-        except Exception:
-            pass
-        return "nothing"
+def capture_voice(duration=7):
+    if not SR_AVAILABLE: return None
+    if not _mic_ok():    return "NO_MIC"
+    set_wake_led("listening")
+    samples = _record_speech(max_sec=duration+4)
+    if samples is None: set_wake_led("idle"); return None
+    audio = sr.AudioData(samples.tobytes(), SAMPLE_RATE, 2)
+    text  = _google(audio)
+    set_wake_led("idle")
+    if text:
+        set_status("Command received", C["mint"])
+        _gui(_cwrite, f"  Heard: {text}\n", "heard")
+        return text.lower()
+    speak(f"Sorry {USER_NAME}, I did not catch that. Please try again.")
+    return None
 
-def scan_once() -> str:
-    """
-    Unified wake word scan.
-    Uses pvporcupine (offline) if available, else Google Speech.
-    Returns: 'woke' | 'nothing' | 'no_mic'
-    """
-    # ── pvporcupine path (offline, preferred) ────────────────────────────
-    if _porcupine_handle is not None:
-        detected = _porcupine_scan()
-        if detected:
-            print("[Wake scan] pvporcupine detected wake word!")
-            return "woke"
-        return "nothing"
+def ask_text(prompt, title="Max"):
+    res = [None]; ev = threading.Event()
+    def _b():
+        d = tk.Toplevel(ROOT); d.title(title); d.geometry("500x160")
+        d.configure(bg=C["bg1"]); d.attributes("-topmost",True); d.grab_set()
+        d.resizable(False,False); d.update_idletasks()
+        d.geometry(f"500x160+{(d.winfo_screenwidth()-500)//2}+{(d.winfo_screenheight()-160)//2}")
+        tk.Label(d,text=prompt,font=("Helvetica Neue",11,"bold"),fg=C["teal"],bg=C["bg1"]).pack(pady=(14,4),padx=18,anchor="w")
+        v = tk.StringVar()
+        e = tk.Entry(d,textvariable=v,width=52,font=FNT_MONO,bg=C["bg2"],fg=C["txt0"],
+                     insertbackground=C["gold"],relief="flat",bd=6)
+        e.pack(padx=18,fill="x"); e.focus()
+        def ok():  res[0]=v.get().strip(); d.destroy(); ev.set()
+        def no():  d.destroy(); ev.set()
+        e.bind("<Return>", lambda _: ok())
+        d.protocol("WM_DELETE_WINDOW", no)
+        bf = tk.Frame(d,bg=C["bg1"]); bf.pack(pady=10)
+        _mk_btn(bf,"OK",ok,C["teal"],C["bg0"],8).pack(side=tk.LEFT,padx=6)
+        _mk_btn(bf,"Cancel",no,C["coral"],C["bg0"],8).pack(side=tk.LEFT,padx=6)
+    ROOT.after(0,_b); ev.wait(60); return res[0]
 
-    # ── Google Speech path (fallback) ────────────────────────────────────
-    return _google_wake_scan()
-
-def _mic_available():
-    return SOUNDDEVICE_AVAILABLE or PYAUDIO_AVAILABLE
-
-# ── VOICE CAPTURE ─────────────────────────────────────────────────────────────
-def capture_voice(duration=6, wake_scan=False):
-    """Capture command audio and return recognised text."""
-    if not SR_AVAILABLE:
-        return None
-    if not _mic_available():
-        return "NO_MIC"
-
-    set_wake_led('scanning' if wake_scan else 'listening')
-
-    if SOUNDDEVICE_AVAILABLE:
-        samples = _record_until_silence(max_seconds=duration + 4)
-        if samples is None:
-            set_wake_led('idle')
-            return None
-        try:
-            audio = sr.AudioData(samples.tobytes(), SAMPLE_RATE, 2)
-            text  = sr.Recognizer().recognize_google(audio)
-            set_wake_led('idle')
-            set_status("Command received", C['mint'])
-            q(_console_write, f"  Heard: {text}\n", "heard")
-            return text.lower()
-        except sr.UnknownValueError:
-            set_wake_led('idle')
-            warn("Could not understand — please speak clearly.")
-            return None
-        except sr.RequestError as e:
-            set_wake_led('idle')
-            err(f"Google Speech API error: {e}")
-            return None
-        except Exception as e:
-            set_wake_led('idle')
-            err(f"Voice error: {e}")
-            return None
-
-    if PYAUDIO_AVAILABLE:
-        try:
-            r = sr.Recognizer()
-            mic = sr.Microphone()
-            with mic as src:
-                r.adjust_for_ambient_noise(src, duration=0.3)
-                audio = r.listen(src, timeout=8, phrase_time_limit=duration + 2)
-            text = r.recognize_google(audio)
-            set_wake_led('idle')
-            set_status("Command received", C['mint'])
-            q(_console_write, f"  Heard: {text}\n", "heard")
-            return text.lower()
-        except (sr.WaitTimeoutError, sr.UnknownValueError):
-            set_wake_led('idle'); return None
-        except sr.RequestError as e:
-            set_wake_led('idle'); err(f"Google Speech error: {e}"); return None
-        except Exception as e:
-            set_wake_led('idle'); err(f"Voice error: {e}"); return None
-
-    set_wake_led('idle')
-    return "NO_MIC"
-
-# ── POPUP INPUT ───────────────────────────────────────────────────────────────
-def ask_text(prompt, title="PA Input"):
-    result = [None]
-    ev = threading.Event()
-    def _build():
-        dlg = tk.Toplevel(ROOT)
-        dlg.title(title); dlg.geometry("500x170")
-        dlg.configure(bg=C['bg1']); dlg.attributes('-topmost', True)
-        dlg.grab_set(); dlg.resizable(False, False)
-        dlg.update_idletasks()
-        x = (dlg.winfo_screenwidth()  - 500) // 2
-        y = (dlg.winfo_screenheight() - 170) // 2
-        dlg.geometry(f"500x170+{x}+{y}")
-        tk.Label(dlg, text=prompt, font=("Helvetica Neue",11,"bold"),
-                 fg=C['teal'], bg=C['bg1']).pack(pady=(16,6), padx=20, anchor='w')
-        evar = tk.StringVar()
-        ent = tk.Entry(dlg, textvariable=evar, width=52, font=FNT_MONO,
-                       bg=C['bg2'], fg=C['txt0'], insertbackground=C['gold'],
-                       relief='flat', bd=6, highlightthickness=1,
-                       highlightcolor=C['teal'], highlightbackground=C['border'])
-        ent.pack(padx=20, fill='x'); ent.focus()
-        def submit(): result[0]=evar.get().strip(); dlg.destroy(); ev.set()
-        def cancel(): dlg.destroy(); ev.set()
-        ent.bind('<Return>', lambda _: submit())
-        dlg.protocol("WM_DELETE_WINDOW", cancel)
-        bf = tk.Frame(dlg, bg=C['bg1']); bf.pack(pady=12)
-        _mk_btn(bf,"OK",    submit,C['teal'], C['bg0'],w=10).pack(side=tk.LEFT,padx=6)
-        _mk_btn(bf,"Cancel",cancel,C['coral'],C['bg0'],w=10).pack(side=tk.LEFT,padx=6)
-    ROOT.after(0, _build); ev.wait(60)
-    return result[0]
-
-# ── FEATURES ──────────────────────────────────────────────────────────────────
-def feat_time():
-    speak(f"The time is {datetime.datetime.now().strftime('%I:%M %p')}")
-
-def feat_date():
-    speak(f"Today is {datetime.datetime.now().strftime('%A, %B %d, %Y')}")
-
-def feat_datetime():
-    now = datetime.datetime.now()
-    speak(f"It is {now.strftime('%A, %B %d, %Y')} at {now.strftime('%I:%M %p')}")
-
+# ── site & app maps ───────────────────────────────────────────────────────────
 SITES = {
-    "youtube":("YouTube","https://www.youtube.com"),
-    "linkedin":("LinkedIn","https://www.linkedin.com"),
-    "github":("GitHub","https://github.com"),
-    "gmail":("Gmail","https://mail.google.com"),
-    "email":("Gmail","https://mail.google.com"),
-    "google":("Google","https://www.google.com"),
+    "youtube":      ("YouTube",      "https://www.youtube.com"),
+    "linkedin":     ("LinkedIn",     "https://www.linkedin.com"),
+    "github":       ("GitHub",       "https://github.com"),
+    "gmail":        ("Gmail",        "https://mail.google.com"),
+    "email":        ("Gmail",        "https://mail.google.com"),
+    "google":       ("Google",       "https://www.google.com"),
     "stackoverflow":("Stack Overflow","https://stackoverflow.com"),
-    "twitter":("Twitter","https://twitter.com"),
-    "reddit":("Reddit","https://www.reddit.com"),
-    "amazon":("Amazon","https://www.amazon.in"),
-    "netflix":("Netflix","https://www.netflix.com"),
-    "wikipedia":("Wikipedia","https://www.wikipedia.org"),
-    "maps":("Google Maps","https://maps.google.com"),
-    "drive":("Google Drive","https://drive.google.com"),
-    "meet":("Google Meet","https://meet.google.com"),
-    "docs":("Google Docs","https://docs.google.com"),
-    "sheets":("Google Sheets","https://sheets.google.com"),
-    "instagram":("Instagram","https://www.instagram.com"),
-    "whatsapp":("WhatsApp Web","https://web.whatsapp.com"),
-    "spotify":("Spotify","https://open.spotify.com"),
-    "discord":("Discord","https://discord.com/app"),
-    "notion":("Notion","https://www.notion.so"),
-    "chatgpt":("ChatGPT","https://chat.openai.com"),
-    "gemini":("Gemini","https://gemini.google.com"),
+    "twitter":      ("Twitter",      "https://twitter.com"),
+    "reddit":       ("Reddit",       "https://www.reddit.com"),
+    "amazon":       ("Amazon",       "https://www.amazon.in"),
+    "netflix":      ("Netflix",      "https://www.netflix.com"),
+    "maps":         ("Google Maps",  "https://maps.google.com"),
+    "drive":        ("Google Drive", "https://drive.google.com"),
+    "meet":         ("Google Meet",  "https://meet.google.com"),
+    "docs":         ("Google Docs",  "https://docs.google.com"),
+    "sheets":       ("Google Sheets","https://sheets.google.com"),
+    "instagram":    ("Instagram",    "https://www.instagram.com"),
+    "whatsapp":     ("WhatsApp",     "https://web.whatsapp.com"),
+    "spotify":      ("Spotify",      "https://open.spotify.com"),
+    "discord":      ("Discord",      "https://discord.com/app"),
+    "notion":       ("Notion",       "https://www.notion.so"),
+    "chatgpt":      ("ChatGPT",      "https://chat.openai.com"),
+    "gemini":       ("Gemini",       "https://gemini.google.com"),
 }
-
-def feat_open_site(cmd):
-    clean = re.sub(r'\bopen\b','',cmd,flags=re.IGNORECASE).strip()
-    for key,(name,url) in SITES.items():
-        if key in clean or key in cmd:
-            speak(f"Opening {name}!"); webbrowser.open(url); return
-    m = re.search(r'open\s+([\w]+)',cmd)
-    if m: speak(f"Opening {m.group(1)}."); webbrowser.open(f"https://www.{m.group(1)}.com")
-    else: speak("Which website would you like me to open?")
-
-def feat_google_search(cmd):
-    qs = re.sub(r'\b(search|google|look up|find)\b','',cmd,flags=re.IGNORECASE).strip()
-    if not qs: qs = ask_text("What should I search for?")
-    if qs:
-        speak(f"Searching Google for {qs}.")
-        webbrowser.open(f"https://www.google.com/search?q={qs.replace(' ','+')}")
-
-def feat_youtube_search(cmd):
-    qs = re.sub(r'\b(youtube|play|search|find|watch|open)\b','',cmd,flags=re.IGNORECASE).strip()
-    if not qs: qs = ask_text("What to search on YouTube?")
-    if qs:
-        speak(f"Searching YouTube for {qs}.")
-        webbrowser.open(f"https://www.youtube.com/results?search_query={qs.replace(' ','+')}")
-
-def feat_open_chrome():
-    speak("Opening Chrome.")
-    if IS_WINDOWS:
-        for p in [r"C:\Program Files\Google\Chrome\Application\chrome.exe",
-                  r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe"]:
-            if os.path.exists(p): subprocess.Popen([p]); return
-        os.system("start chrome")
-    elif IS_MAC: subprocess.Popen(["open","-a","Google Chrome"])
-    elif IS_LINUX: subprocess.Popen(["google-chrome"])
-
-def feat_open_email():
-    speak("Opening Gmail."); webbrowser.open("https://mail.google.com")
-
-# ── SAFE MATH EVALUATOR (replaces eval) ───────────────────────────────────────
-_SAFE_OPS = {
-    ast.Add:  op.add,   ast.Sub:  op.sub,
-    ast.Mult: op.mul,   ast.Div:  op.truediv,
-    ast.Pow:  op.pow,   ast.Mod:  op.mod,
-    ast.USub: op.neg,   ast.UAdd: op.pos,
-    ast.FloorDiv: op.floordiv,
-}
-_SAFE_MATH_FNS = {
-    'sqrt': math.sqrt, 'floor': math.floor, 'ceil': math.ceil,
-    'log':  math.log,  'log10': math.log10,
-    'sin':  math.sin,  'cos':   math.cos,   'tan': math.tan,
-    'fabs': math.fabs, 'abs':   abs,        'round': round,
-}
-
-def _safe_eval_node(node):
-    """Recursively evaluate an AST node using only whitelisted operations."""
-    if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
-        return node.value
-    if isinstance(node, ast.Num):          # Python < 3.8 compat
-        return node.n
-    if isinstance(node, ast.BinOp) and type(node.op) in _SAFE_OPS:
-        left  = _safe_eval_node(node.left)
-        right = _safe_eval_node(node.right)
-        return _SAFE_OPS[type(node.op)](left, right)
-    if isinstance(node, ast.UnaryOp) and type(node.op) in _SAFE_OPS:
-        return _SAFE_OPS[type(node.op)](_safe_eval_node(node.operand))
-    if isinstance(node, ast.Call):
-        fn_name = (node.func.id if isinstance(node.func, ast.Name)
-                   else node.func.attr if isinstance(node.func, ast.Attribute)
-                   else None)
-        if fn_name in _SAFE_MATH_FNS:
-            args = [_safe_eval_node(a) for a in node.args]
-            return _SAFE_MATH_FNS[fn_name](*args)
-    raise ValueError(f"Unsupported expression node: {ast.dump(node)}")
-
-def _safe_calculate(expr: str):
-    """Parse and evaluate a math expression with no use of eval()."""
-    tree = ast.parse(expr, mode='eval')
-    return _safe_eval_node(tree.body)
-
-def feat_calculate(cmd):
-    expr = re.sub(r'\b(calculate|compute|what is|whats|evaluate|solve)\b','',cmd,flags=re.IGNORECASE).strip()
-    expr = (expr.replace("plus","+").replace("minus","-").replace("times","*")
-               .replace("multiplied by","*").replace("divided by","/")
-               .replace("mod","%").replace("power","**").replace("^","**")
-               .replace("square root of","sqrt(").strip())
-    if "sqrt(" in expr and not expr.endswith(")"): expr += ")"
-    if not expr: speak("Please give me a math expression."); return
-    try:
-        res = _safe_calculate(expr)
-        if isinstance(res, float) and res == int(res): res = int(res)
-        speak(f"The result is {res}"); info(f"{expr} = {res}")
-    except ZeroDivisionError: speak("Cannot divide by zero.")
-    except ValueError as e:
-        logger.warning("Calculator expression rejected: %s | expr: %s", e, expr)
-        speak("Couldn't evaluate that.")
-    except Exception as e:
-        logger.error("Calculator unexpected error: %s | expr: %s", e, expr, exc_info=True)
-        speak("Couldn't evaluate that.")
-
-def feat_screenshot():
-    if not PYAUTOGUI_AVAILABLE: speak("Run: pip install pyautogui"); return
-    fname = f"screenshot_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
-    try: pyautogui.screenshot().save(fname); speak(f"Screenshot saved as {fname}.")
-    except Exception as e:
-        logger.error("Screenshot failed: %s", e)
-        speak(f"Screenshot failed: {e}")
-
-def feat_system_info():
-    if not PSUTIL_AVAILABLE: speak("Run: pip install psutil"); return
-    cpu=psutil.cpu_percent(interval=1); mem=psutil.virtual_memory()
-    disk=psutil.disk_usage('/'); cores=psutil.cpu_count(logical=True)
-    speak(f"CPU at {cpu}% across {cores} cores. RAM {mem.percent}% used. Disk {disk.percent}% used.")
-
-def feat_battery():
-    if not PSUTIL_AVAILABLE: speak("Run: pip install psutil"); return
-    b=psutil.sensors_battery()
-    if b:
-        st="charging" if b.power_plugged else "discharging"
-        mins=int(b.secsleft/60) if b.secsleft!=psutil.POWER_TIME_UNLIMITED else -1
-        speak(f"Battery at {b.percent:.0f}%, {st}" + (f", {mins} minutes remaining." if mins>0 else "."))
-    else: speak("No battery — desktop system.")
-
-def feat_cpu():
-    if not PSUTIL_AVAILABLE: speak("Run: pip install psutil"); return
-    speak(f"CPU at {psutil.cpu_percent(interval=0.5)}%, {psutil.cpu_freq().current:.0f} MHz.")
-
-def feat_ram():
-    if not PSUTIL_AVAILABLE: speak("Run: pip install psutil"); return
-    m=psutil.virtual_memory()
-    speak(f"RAM: {m.used//1024**2} MB used of {m.total//1024**2} MB. {m.percent}% used.")
-
-def feat_disk():
-    if not PSUTIL_AVAILABLE: speak("Run: pip install psutil"); return
-    d=psutil.disk_usage('/')
-    speak(f"Disk: {d.used//1024**3:.1f} GB used of {d.total//1024**3:.1f} GB. {d.percent}% full.")
-
-def feat_processes():
-    if not PSUTIL_AVAILABLE: speak("Run: pip install psutil"); return
-    procs=sorted(psutil.process_iter(['pid','name','cpu_percent']),
-                 key=lambda p:p.info['cpu_percent'] or 0,reverse=True)[:5]
-    speak("Top 5 CPU processes:")
-    for p in procs: info(f"  PID {p.info['pid']:5d}  {p.info['cpu_percent']:5.1f}%  {p.info['name']}")
-
-def feat_network():
-    try: host=socket.gethostname(); speak(f"Hostname: {host}, IP: {socket.gethostbyname(host)}")
-    except Exception as e: speak(f"Network error: {e}")
-
-def feat_public_ip():
-    if not REQUESTS_AVAILABLE: speak("Run: pip install requests"); return
-    try: speak(f"Your public IP is {requests.get('https://api.ipify.org?format=json',timeout=6).json()['ip']}")
-    except Exception as e:
-        logger.warning("Public IP fetch failed: %s", e)
-        speak("Could not fetch public IP.")
-
-def feat_ping():
-    if not REQUESTS_AVAILABLE: speak("Run: pip install requests"); return
-    try:
-        t0=time.perf_counter(); requests.get("https://www.google.com",timeout=5)
-        speak(f"Ping to Google: {int((time.perf_counter()-t0)*1000)} ms")
-    except Exception as e:
-        logger.warning("Ping failed: %s", e)
-        speak("Ping failed.")
-
-def feat_lock():
-    speak("Locking screen."); time.sleep(1)
-    if IS_WINDOWS: os.system("rundll32.exe user32.dll,LockWorkStation")
-    elif IS_LINUX:
-        for c in ["gnome-screensaver-command -l","xdg-screensaver lock","loginctl lock-session"]:
-            if os.system(f"{c} 2>/dev/null")==0: break
-    elif IS_MAC: os.system(r'/System/Library/CoreServices/Menu\ Extras/User.menu/Contents/Resources/CGSession -suspend')
-
-def feat_sleep():
-    speak("Going to sleep."); time.sleep(2)
-    if IS_WINDOWS: os.system("rundll32.exe powrprof.dll,SetSuspendState 0,1,0")
-    elif IS_LINUX: os.system("systemctl suspend")
-    elif IS_MAC: os.system("pmset sleepnow")
-
-def feat_shutdown():
-    def _c():
-        if msgbox.askyesno("Shutdown","Shut down now?",parent=ROOT):
-            speak("Shutting down in 5 seconds.")
-            def _d():
-                time.sleep(5)
-                if IS_WINDOWS: os.system("shutdown /s /t 1")
-                elif IS_LINUX: os.system("shutdown -h now")
-                elif IS_MAC: os.system("sudo shutdown -h now")
-            threading.Thread(target=_d,daemon=True).start()
-        else: speak("Shutdown cancelled.")
-    ROOT.after(0,_c)
-
-def feat_restart():
-    def _c():
-        if msgbox.askyesno("Restart","Restart now?",parent=ROOT):
-            speak("Restarting in 5 seconds.")
-            def _d():
-                time.sleep(5)
-                if IS_WINDOWS: os.system("shutdown /r /t 1")
-                elif IS_LINUX: os.system("reboot")
-                elif IS_MAC: os.system("sudo shutdown -r now")
-            threading.Thread(target=_d,daemon=True).start()
-        else: speak("Restart cancelled.")
-    ROOT.after(0,_c)
-
-def feat_logout():
-    speak("Logging out."); time.sleep(1)
-    if IS_WINDOWS: os.system("shutdown /l")
-    elif IS_LINUX: os.system("pkill -KILL -u $USER")
-    elif IS_MAC: os.system("osascript -e 'tell app \"System Events\" to log out'")
 
 APP_MAP_WIN = {
-    "notepad":"notepad","calculator":"calc","paint":"mspaint","explorer":"explorer",
-    "task manager":"taskmgr","cmd":"start cmd","powershell":"start powershell",
-    "word":"start winword","excel":"start excel","powerpoint":"start powerpnt",
+    "notepad":"notepad","calculator":"calc","paint":"mspaint",
+    "explorer":"explorer","task manager":"taskmgr","cmd":"start cmd",
+    "powershell":"start powershell","word":"start winword",
+    "excel":"start excel","powerpoint":"start powerpnt",
     "vs code":"code","vscode":"code","spotify":"start spotify",
     "edge":"start msedge","firefox":"start firefox",
 }
@@ -874,664 +598,1046 @@ APP_MAP_LINUX = {
     "firefox":"firefox","chrome":"google-chrome","vlc":"vlc","gimp":"gimp",
 }
 
-def feat_open_app(cmd):
-    amap = APP_MAP_WIN if IS_WINDOWS else APP_MAP_LINUX
-    for key,exe in amap.items():
-        if key in cmd:
-            speak(f"Opening {key}.")
-            try:
-                if IS_WINDOWS: os.system(exe)
-                else: subprocess.Popen(exe.split())
-            except Exception as e: err(f"Could not open {key}: {e}")
-            return
-    speak("App not found. Try: open notepad or open calculator.")
+PROC_MAP = {
+    "notepad":"notepad.exe","calculator":"calculator.exe","paint":"mspaint.exe",
+    "word":"winword.exe","excel":"excel.exe","powerpoint":"powerpnt.exe",
+    "vs code":"code.exe","vscode":"code.exe","spotify":"spotify.exe",
+    "edge":"msedge.exe","firefox":"firefox.exe","chrome":"chrome.exe",
+    "vlc":"vlc","gimp":"gimp","powershell":"powershell.exe",
+    "cmd":"cmd.exe","explorer":"explorer.exe",
+}
 
-def feat_wikipedia(cmd):
-    if not WIKI_AVAILABLE: speak("Run: pip install wikipedia"); return
-    query=re.sub(r'\b(wikipedia|wiki|search|tell me about|who is|what is)\b','',cmd,flags=re.IGNORECASE).strip()
-    if not query: query=ask_text("What to look up?")
+# ── tab close helper ──────────────────────────────────────────────────────────
+def _close_tab_by_title(site_name):
+    if not PYGETWINDOW_AVAILABLE:
+        speak(f"{USER_NAME}, pygetwindow not installed. Run pip install pygetwindow.")
+        return False
+    import ctypes
+    all_titles = gw.getAllTitles()
+    target_win = None
+    for title in all_titles:
+        if site_name.lower() in title.lower():
+            wins = gw.getWindowsWithTitle(title)
+            if wins: target_win = wins[0]; break
+    if target_win is None:
+        for title in all_titles:
+            t = title.lower()
+            if any(b in t for b in ["chrome","firefox","edge","brave","opera"]):
+                wins = gw.getWindowsWithTitle(title)
+                if wins: target_win = wins[0]; break
+    if target_win is None:
+        speak(f"{USER_NAME}, I could not find {site_name} open in any browser.")
+        return False
+    try:
+        hwnd = target_win._hWnd
+        ctypes.windll.user32.ShowWindow(hwnd, 9)
+        ctypes.windll.user32.SetForegroundWindow(hwnd)
+        time.sleep(0.8)
+        pyautogui.hotkey("ctrl", "F4")
+        time.sleep(0.4)
+        return True
+    except Exception as e:
+        err(f"Tab close error: {e}"); return False
+
+# ── features ──────────────────────────────────────────────────────────────────
+
+def feat_time():
+    speak(f"{USER_NAME}, the time is {datetime.datetime.now().strftime('%I:%M %p')}.")
+
+def feat_date():
+    speak(f"{USER_NAME}, today is {datetime.datetime.now().strftime('%A, %B %d, %Y')}.")
+
+def feat_datetime():
+    n = datetime.datetime.now()
+    speak(f"{USER_NAME}, it is {n.strftime('%A, %B %d')} and the time is {n.strftime('%I:%M %p')}.")
+
+def feat_open_site(site_key):
+    if site_key in SITES:
+        name, url = SITES[site_key]
+        speak(f"Opening {name} for you, {USER_NAME}.")
+        webbrowser.open(url)
+    else:
+        speak(f"{USER_NAME}, I could not find that website.")
+
+def feat_close_site(site_key=""):
+    if not PYAUTOGUI_AVAILABLE:
+        speak(f"{USER_NAME}, pyautogui is not installed. Run pip install pyautogui.")
+        return
+    name = SITES.get(site_key, (site_key.title(), ""))[0] if site_key else "that tab"
+    if _close_tab_by_title(name):
+        speak(f"{USER_NAME}, {name} tab has been closed.")
+
+def feat_google_search(query):
+    if query:
+        speak(f"Searching Google for {query}, {USER_NAME}.")
+        webbrowser.open(f"https://www.google.com/search?q={query.replace(' ','+')}")
+    else:
+        speak(f"{USER_NAME}, no search query given.")
+
+def feat_youtube_search(query):
+    if query:
+        speak(f"Searching YouTube for {query}, {USER_NAME}.")
+        webbrowser.open(f"https://www.youtube.com/results?search_query={query.replace(' ','+')}")
+    else:
+        speak(f"{USER_NAME}, no YouTube query given.")
+
+def feat_open_chrome():
+    speak(f"Opening Chrome, {USER_NAME}.")
+    if IS_WINDOWS:
+        for p in [r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+                  r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe"]:
+            if os.path.exists(p): subprocess.Popen([p]); return
+        os.system("start chrome")
+    elif IS_MAC:   subprocess.Popen(["open","-a","Google Chrome"])
+    elif IS_LINUX: subprocess.Popen(["google-chrome"])
+
+def feat_close_chrome():
+    speak(f"{USER_NAME}, closing Chrome now.")
+    if IS_WINDOWS:   os.system("taskkill /f /im chrome.exe")
+    elif IS_LINUX:   os.system("pkill chrome")
+    elif IS_MAC:     os.system("osascript -e 'quit app \"Google Chrome\"'")
+
+def feat_open_app(app_key):
+    amap = APP_MAP_WIN if IS_WINDOWS else APP_MAP_LINUX
+    if app_key in amap:
+        speak(f"Opening {app_key}, {USER_NAME}.")
+        try:
+            if IS_WINDOWS: os.system(amap[app_key])
+            else: subprocess.Popen(amap[app_key].split())
+        except Exception as e: speak(f"{USER_NAME}, could not open {app_key}. {e}")
+    else:
+        speak(f"{USER_NAME}, I could not find that app.")
+
+def feat_close_app(app_key):
+    if app_key in PROC_MAP:
+        speak(f"Closing {app_key}, {USER_NAME}.")
+        if IS_WINDOWS: os.system(f"taskkill /f /im {PROC_MAP[app_key]}")
+        else:          os.system(f"pkill -f {PROC_MAP[app_key]}")
+    else:
+        speak(f"{USER_NAME}, I could not find that application to close.")
+
+def feat_calculate(expr_raw):
+    expr = (expr_raw.replace("plus","+").replace("minus","-").replace("times","*")
+                    .replace("multiplied by","*").replace("divided by","/")
+                    .replace("mod","%").replace("power","**").replace("^","**")
+                    .replace("square root of","math.sqrt("))
+    if "math.sqrt(" in expr and not expr.endswith(")"): expr += ")"
+    if not expr.strip(): speak(f"{USER_NAME}, please give me an expression."); return
+    if re.search(r"[a-zA-Z]",expr.replace("math","").replace("sqrt","")):
+        speak(f"{USER_NAME}, I can only calculate numeric expressions."); return
+    try:
+        r = eval(expr,{"__builtins__":{},"math":math})
+        if isinstance(r,float) and r==int(r): r=int(r)
+        speak(f"{USER_NAME}, the answer is {r}.")
+    except ZeroDivisionError: speak(f"{USER_NAME}, I cannot divide by zero.")
+    except Exception:         speak(f"{USER_NAME}, I could not evaluate that.")
+
+def feat_screenshot():
+    if not PYAUTOGUI_AVAILABLE: speak(f"{USER_NAME}, pyautogui is not installed."); return
+    fname = f"screenshot_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+    try:
+        pyautogui.screenshot().save(fname)
+        speak(f"{USER_NAME}, screenshot saved as {fname}.")
+    except Exception as e: speak(f"{USER_NAME}, screenshot failed. {e}")
+
+def feat_system_info():
+    if not PSUTIL_AVAILABLE: speak(f"{USER_NAME}, psutil is not installed."); return
+    cpu = psutil.cpu_percent(interval=1); mem = psutil.virtual_memory()
+    disk = psutil.disk_usage("/"); cores = psutil.cpu_count(logical=True)
+    speak(f"{USER_NAME}, CPU {cpu}% on {cores} cores, RAM {mem.percent}% used, disk {disk.percent}% full.")
+
+def feat_battery():
+    if not PSUTIL_AVAILABLE: speak(f"{USER_NAME}, psutil is not installed."); return
+    b = psutil.sensors_battery()
+    if b:
+        st = "charging" if b.power_plugged else "discharging"
+        mins = int(b.secsleft/60) if b.secsleft not in (psutil.POWER_TIME_UNLIMITED,-1) else -1
+        msg = f"{USER_NAME}, battery is {b.percent:.0f}% and {st}."
+        if mins > 0: msg += f" About {mins} minutes left."
+        speak(msg)
+    else: speak(f"{USER_NAME}, no battery found — desktop system.")
+
+def feat_cpu():
+    if not PSUTIL_AVAILABLE: speak(f"{USER_NAME}, psutil not installed."); return
+    speak(f"{USER_NAME}, CPU is at {psutil.cpu_percent(interval=0.5)}%, {psutil.cpu_freq().current:.0f} MHz.")
+
+def feat_ram():
+    if not PSUTIL_AVAILABLE: speak(f"{USER_NAME}, psutil not installed."); return
+    m = psutil.virtual_memory()
+    speak(f"{USER_NAME}, RAM {m.percent}% used — {m.used//1024**2} MB of {m.total//1024**2} MB.")
+
+def feat_disk():
+    if not PSUTIL_AVAILABLE: speak(f"{USER_NAME}, psutil not installed."); return
+    d = psutil.disk_usage("/")
+    speak(f"{USER_NAME}, disk {d.percent}% full — {d.used//1024**3:.1f} GB of {d.total//1024**3:.1f} GB.")
+
+def feat_processes():
+    if not PSUTIL_AVAILABLE: speak(f"{USER_NAME}, psutil not installed."); return
+    procs = sorted(psutil.process_iter(["pid","name","cpu_percent"]),
+                   key=lambda p: p.info["cpu_percent"] or 0, reverse=True)[:5]
+    speak(f"{USER_NAME}, top 5 CPU processes shown in console.")
+    for p in procs: info(f"  {p.info['pid']:5d}  {p.info['cpu_percent']:5.1f}%  {p.info['name']}")
+
+def feat_network():
+    try:
+        host = socket.gethostname(); ip = socket.gethostbyname(host)
+        speak(f"{USER_NAME}, hostname {host}, local IP {ip}.")
+    except Exception as e: speak(f"{USER_NAME}, network error: {e}")
+
+def feat_public_ip():
+    if not REQUESTS_AVAILABLE: speak(f"{USER_NAME}, requests not installed."); return
+    try:
+        ip = requests.get("https://api.ipify.org?format=json",timeout=6).json()["ip"]
+        speak(f"{USER_NAME}, your public IP is {ip}.")
+    except: speak(f"{USER_NAME}, could not fetch public IP.")
+
+def feat_ping():
+    if not REQUESTS_AVAILABLE: speak(f"{USER_NAME}, requests not installed."); return
+    speak(f"{USER_NAME}, testing your connection.")
+    try:
+        t0 = time.perf_counter(); requests.get("https://www.google.com",timeout=5)
+        ms = int((time.perf_counter()-t0)*1000)
+        q = "excellent" if ms<50 else "good" if ms<100 else "slow"
+        speak(f"{USER_NAME}, ping is {ms} ms — connection is {q}.")
+    except: speak(f"{USER_NAME}, ping failed. Check your internet.")
+
+def feat_lock():
+    speak(f"Locking screen, {USER_NAME}.")
+    time.sleep(1)
+    if IS_WINDOWS:   os.system("rundll32.exe user32.dll,LockWorkStation")
+    elif IS_LINUX:
+        for c in ["gnome-screensaver-command -l","xdg-screensaver lock","loginctl lock-session"]:
+            if os.system(f"{c} 2>/dev/null")==0: break
+    elif IS_MAC: os.system(r'/System/Library/CoreServices/Menu\ Extras/User.menu/Contents/Resources/CGSession -suspend')
+
+def feat_sleep():
+    speak(f"Putting computer to sleep. Goodbye {USER_NAME}.")
+    time.sleep(2)
+    if IS_WINDOWS:   os.system("rundll32.exe powrprof.dll,SetSuspendState 0,1,0")
+    elif IS_LINUX:   os.system("systemctl suspend")
+    elif IS_MAC:     os.system("pmset sleepnow")
+
+def feat_shutdown():
+    def _c():
+        if msgbox.askyesno("Shutdown","Shut down now?",parent=ROOT):
+            speak(f"Shutting down in 5 seconds. Goodbye {USER_NAME}!")
+            def _d(): time.sleep(5); os.system("shutdown /s /t 1" if IS_WINDOWS else "shutdown -h now")
+            threading.Thread(target=_d,daemon=True).start()
+        else: speak(f"Shutdown cancelled, {USER_NAME}.")
+    ROOT.after(0,_c)
+
+def feat_restart():
+    def _c():
+        if msgbox.askyesno("Restart","Restart now?",parent=ROOT):
+            speak(f"Restarting in 5 seconds, {USER_NAME}.")
+            def _d(): time.sleep(5); os.system("shutdown /r /t 1" if IS_WINDOWS else "reboot")
+            threading.Thread(target=_d,daemon=True).start()
+        else: speak(f"Restart cancelled, {USER_NAME}.")
+    ROOT.after(0,_c)
+
+def feat_logout():
+    speak(f"Logging out. See you, {USER_NAME}.")
+    time.sleep(1)
+    if IS_WINDOWS:   os.system("shutdown /l")
+    elif IS_LINUX:   os.system("pkill -KILL -u $USER")
+    elif IS_MAC:     os.system("osascript -e 'tell app \"System Events\" to log out'")
+
+def feat_wikipedia(query):
+    if not WIKI_AVAILABLE: speak(f"{USER_NAME}, wikipedia not installed."); return
+    if not query: query = ask_text("Search Wikipedia for?")
     if not query: return
-    speak(f"Looking up {query}.")
+    speak(f"{USER_NAME}, searching Wikipedia for {query}.")
     try:
         wikipedia.set_lang("en")
-        speak(wikipedia.summary(query,sentences=3,auto_suggest=False))
+        speak(wikipedia.summary(query, sentences=3, auto_suggest=False))
     except wikipedia.exceptions.DisambiguationError as e:
-        speak(f"Too many results. Options: {', '.join(e.options[:3])}")
-    except wikipedia.exceptions.PageError:
-        try: speak(wikipedia.summary(query,sentences=3,auto_suggest=True))
-        except Exception as e:
-            logger.warning("Wikipedia fallback search failed for '%s': %s", query, e)
-            speak(f"Couldn't find {query}.")
-    except Exception as e:
-        logger.warning("Wikipedia error for '%s': %s", query, e)
-        speak(f"Wikipedia error: {e}")
+        speak(f"{USER_NAME}, multiple results. Did you mean {', '.join(e.options[:3])}?")
+    except Exception:
+        try:    speak(wikipedia.summary(query, sentences=3, auto_suggest=True))
+        except: speak(f"{USER_NAME}, could not find {query} on Wikipedia.")
 
-def feat_define(cmd):
-    word=re.sub(r'\b(define|definition|meaning of|what does|mean|dictionary)\b','',cmd,flags=re.IGNORECASE).strip()
-    if not word: word=ask_text("Which word to define?")
+def feat_define(word):
+    if not word: word = ask_text("Which word to define?")
     if not word: return
-    if not REQUESTS_AVAILABLE: speak("Run: pip install requests"); return
+    if not REQUESTS_AVAILABLE: speak(f"{USER_NAME}, requests not installed."); return
+    speak(f"{USER_NAME}, looking up {word}.")
     try:
-        r=requests.get(f"https://api.dictionaryapi.dev/api/v2/entries/en/{word}",timeout=6)
-        if r.status_code==200: speak(f"{word}: {r.json()[0]['meanings'][0]['definitions'][0]['definition']}")
-        else: speak(f"No definition found for {word}.")
-    except Exception as e:
-        logger.warning("Dictionary API error for '%s': %s", word, e)
-        speak("Dictionary unavailable.")
+        r = requests.get(f"https://api.dictionaryapi.dev/api/v2/entries/en/{word}",timeout=6)
+        if r.status_code == 200:
+            d = r.json()[0]["meanings"][0]["definitions"][0]["definition"]
+            speak(f"{USER_NAME}, {word} means: {d}")
+        else: speak(f"{USER_NAME}, no definition found for {word}.")
+    except: speak(f"{USER_NAME}, dictionary unavailable.")
 
-def feat_weather(cmd=""):
-    key=os.environ.get("OPENWEATHER_API_KEY","")
-    if not key: speak("Needs OPENWEATHER_API_KEY env variable."); return
-    city="Hyderabad"
-    m=re.search(r'in\s+([A-Za-z ]+)$',cmd)
-    if m: city=m.group(1).strip()
+def feat_weather(city="Hyderabad"):
+    key = os.environ.get("OPENWEATHER_API_KEY","")
+    if not key: speak(f"{USER_NAME}, set OPENWEATHER_API_KEY in environment variables."); return
+    speak(f"{USER_NAME}, checking weather in {city}.")
     try:
-        d=requests.get(f"https://api.openweathermap.org/data/2.5/weather?q={city}&appid={key}&units=metric",timeout=6).json()
-        if d.get("cod")!=404:
-            speak(f"{city}: {d['main']['temp']:.1f}°C, {d['weather'][0]['description']}, feels like {d['main']['feels_like']:.1f}°C, humidity {d['main']['humidity']}%.")
-        else: speak(f"City {city} not found.")
-    except Exception as e:
-        logger.warning("Weather API error for '%s': %s", city, e)
-        speak("Weather unavailable.")
+        d = requests.get(f"https://api.openweathermap.org/data/2.5/weather?q={city}&appid={key}&units=metric",timeout=6).json()
+        if d.get("cod") != 404:
+            speak(f"{USER_NAME}, {city}: {d['main']['temp']:.1f} degrees, {d['weather'][0]['description']}, humidity {d['main']['humidity']}%.")
+        else: speak(f"{USER_NAME}, city {city} not found.")
+    except: speak(f"{USER_NAME}, weather unavailable.")
 
 def feat_news():
-    key=os.environ.get("NEWS_API_KEY","")
-    if not key: speak("Needs NEWS_API_KEY env variable."); return
+    key = os.environ.get("NEWS_API_KEY","")
+    if not key: speak(f"{USER_NAME}, set NEWS_API_KEY in environment variables."); return
+    speak(f"{USER_NAME}, fetching headlines.")
     try:
-        d=requests.get(f"https://newsapi.org/v2/top-headlines?country=in&apiKey={key}",timeout=6).json()
+        d = requests.get(f"https://newsapi.org/v2/top-headlines?country=in&apiKey={key}",timeout=6).json()
         if d.get("status")=="ok":
-            speak("Top 3 headlines:")
-            for i,a in enumerate(d.get("articles",[])[:3],1): speak(f"{i}: {a.get('title','No title')}")
-        else: speak("Could not fetch news.")
-    except Exception as e:
-        logger.warning("News API error: %s", e)
-        speak("News unavailable.")
+            for i,a in enumerate(d.get("articles",[])[:3],1):
+                speak(f"Headline {i}: {a.get('title','')}")
+        else: speak(f"{USER_NAME}, could not fetch news.")
+    except: speak(f"{USER_NAME}, news unavailable.")
 
 def feat_joke():
     if JOKES_AVAILABLE:
         try: speak(pyjokes.get_joke()); return
-        except Exception as e: logger.warning("pyjokes error: %s", e)
+        except: pass
     speak(random.choice([
         "Why do programmers prefer dark mode? Because light attracts bugs!",
-        "How many programmers to change a light bulb? None, that's a hardware problem.",
-        "A SQL query walks into a bar and asks two tables: can I join you?",
+        "How many programmers to change a bulb? None, that is a hardware problem.",
+        "A SQL query walks into a bar. Can I join you?",
         "Why did the developer go broke? He used up all his cache.",
-        "I told my computer I needed a break. Now it keeps sending me Kit-Kat ads.",
     ]))
 
 def feat_quote():
     if REQUESTS_AVAILABLE:
         try:
-            r=requests.get("https://zenquotes.io/api/random",timeout=6)
-            if r.status_code==200: d=r.json()[0]; speak(f"{d['q']} — {d['a']}"); return
-        except Exception as e: logger.warning("Quote API error: %s", e)
+            r = requests.get("https://zenquotes.io/api/random",timeout=6)
+            if r.status_code==200:
+                d = r.json()[0]; speak(f"{d['q']} — {d['a']}"); return
+        except: pass
     speak(random.choice([
-        "The only way to do great work is to love what you do. — Steve Jobs",
-        "In the middle of difficulty lies opportunity. — Albert Einstein",
-        "It does not matter how slowly you go as long as you do not stop. — Confucius",
-        "Code is like humour. When you have to explain it, it is bad. — Cory House",
+        "The only way to do great work is to love what you do. Steve Jobs.",
+        "In the middle of difficulty lies opportunity. Einstein.",
+        "It does not matter how slowly you go as long as you do not stop. Confucius.",
     ]))
 
-def feat_timer(cmd):
-    m=re.search(r'(\d+)\s*(hour|hours|minute|minutes|second|seconds)',cmd)
-    if not m:
-        val=ask_text("Duration (e.g. 5 minutes):")
-        if not val: return
-        m=re.search(r'(\d+)\s*(hour|hours|minute|minutes|second|seconds)',val)
-    if not m: speak("Specify a duration like 5 minutes."); return
-    amount=int(m.group(1)); unit=m.group(2)
-    secs=amount*3600 if 'hour' in unit else amount*60 if 'minute' in unit else amount
-    speak(f"Timer set for {amount} {unit}.")
-    def _r(): time.sleep(secs); speak(f"Timer done! {amount} {unit} passed.")
+def feat_timer(amount, unit):
+    secs = amount*3600 if "hour" in unit else amount*60 if "minute" in unit else amount
+    speak(f"{USER_NAME}, timer set for {amount} {unit}.")
+    def _r(): time.sleep(secs); speak(f"{USER_NAME}, your {amount} {unit} timer is done!")
     threading.Thread(target=_r,daemon=True).start()
 
-def feat_alarm(cmd):
-    m=re.search(r'(\d{1,2})[:\s]?(\d{2})?\s*(am|pm)?',cmd,re.IGNORECASE)
-    if not m:
-        val=ask_text("Alarm time (e.g. 7 30 am):")
-        if not val: return
-        m=re.search(r'(\d{1,2})[:\s]?(\d{2})?\s*(am|pm)?',val,re.IGNORECASE)
-    if not m: speak("Couldn't parse that time."); return
-    hour=int(m.group(1)); minute=int(m.group(2) or 0); mer=(m.group(3) or '').lower()
-    if mer=='pm' and hour!=12: hour+=12
-    elif mer=='am' and hour==12: hour=0
-    target=datetime.datetime.now().replace(hour=hour,minute=minute,second=0,microsecond=0)
-    if target<=datetime.datetime.now(): target+=datetime.timedelta(days=1)
-    speak(f"Alarm set for {target.strftime('%I:%M %p')}.")
-    def _r(): time.sleep((target-datetime.datetime.now()).total_seconds()); speak(f"Alarm! It is {target.strftime('%I:%M %p')}!")
+def feat_alarm(hour, minute, label=""):
+    t = datetime.datetime.now().replace(hour=hour,minute=minute,second=0,microsecond=0)
+    if t <= datetime.datetime.now(): t += datetime.timedelta(days=1)
+    speak(f"{USER_NAME}, alarm set for {t.strftime('%I:%M %p')}.")
+    def _r():
+        time.sleep((t-datetime.datetime.now()).total_seconds())
+        speak(f"{USER_NAME}, wake up! It is {t.strftime('%I:%M %p')}!")
     threading.Thread(target=_r,daemon=True).start()
 
 def feat_note():
+    speak(f"{USER_NAME}, opening quick note.")
     def _b():
-        dlg=tk.Toplevel(ROOT); dlg.title("Quick Note"); dlg.geometry("520x340")
-        dlg.configure(bg=C['bg1']); dlg.attributes('-topmost',True); dlg.grab_set()
-        dlg.resizable(False,False); dlg.update_idletasks()
-        x=(dlg.winfo_screenwidth()-520)//2; y=(dlg.winfo_screenheight()-340)//2
-        dlg.geometry(f"520x340+{x}+{y}")
-        tk.Label(dlg,text="Quick Note",font=("Helvetica Neue",13,"bold"),
-                 fg=C['gold'],bg=C['bg1']).pack(pady=(14,6),anchor='w',padx=18)
-        txt=tk.Text(dlg,height=10,width=58,font=FNT_MONO,bg=C['bg2'],fg=C['txt0'],
-                    insertbackground=C['gold'],relief='flat',bd=4,padx=8,pady=6)
-        txt.pack(padx=18,fill='both',expand=True); txt.focus()
+        d = tk.Toplevel(ROOT); d.title("Quick Note"); d.geometry("520x320")
+        d.configure(bg=C["bg1"]); d.attributes("-topmost",True); d.grab_set()
+        d.resizable(False,False); d.update_idletasks()
+        d.geometry(f"520x320+{(d.winfo_screenwidth()-520)//2}+{(d.winfo_screenheight()-320)//2}")
+        tk.Label(d,text="Quick Note",font=("Helvetica Neue",13,"bold"),fg=C["gold"],bg=C["bg1"]).pack(pady=(12,4),anchor="w",padx=16)
+        txt = tk.Text(d,height=9,font=FNT_MONO,bg=C["bg2"],fg=C["txt0"],
+                      insertbackground=C["gold"],relief="flat",bd=4)
+        txt.pack(padx=16,fill="both",expand=True); txt.focus()
         def save():
-            content=txt.get("1.0",tk.END).strip()
+            content = txt.get("1.0",tk.END).strip()
             if content:
-                fname=f"note_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
-                with open(fname,'w',encoding='utf-8') as f: f.write(content)
-                speak(f"Note saved as {fname}")
-            dlg.destroy()
-        bf=tk.Frame(dlg,bg=C['bg1']); bf.pack(pady=10)
-        _mk_btn(bf,"Save",save,C['gold'],C['bg0'],w=12).pack(side=tk.LEFT,padx=8)
-        _mk_btn(bf,"Cancel",dlg.destroy,C['coral'],C['bg0'],w=12).pack(side=tk.LEFT,padx=8)
+                fn = f"note_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+                open(fn,"w",encoding="utf-8").write(content)
+                speak(f"{USER_NAME}, note saved as {fn}.")
+            d.destroy()
+        def close_note(): speak(f"{USER_NAME}, note closed."); d.destroy()
+        bf = tk.Frame(d,bg=C["bg1"]); bf.pack(pady=8)
+        _mk_btn(bf,"Save",save,C["gold"],C["bg0"],10).pack(side=tk.LEFT,padx=6)
+        _mk_btn(bf,"Close",close_note,C["coral"],C["bg0"],10).pack(side=tk.LEFT,padx=6)
     ROOT.after(0,_b)
 
 def feat_clipboard():
-    try: c=ROOT.clipboard_get(); speak(f"Clipboard: {c[:100]}")
-    except Exception: speak("Clipboard is empty.")
+    try:
+        c = ROOT.clipboard_get()
+        speak(f"{USER_NAME}, clipboard: {c[:80]}") if c else speak(f"{USER_NAME}, clipboard is empty.")
+    except: speak(f"{USER_NAME}, clipboard is empty.")
 
-def feat_coin(): speak(f"Coin flip: {random.choice(['Heads','Tails'])}!")
+def feat_clear_clipboard():
+    try: ROOT.clipboard_clear(); speak(f"{USER_NAME}, clipboard cleared.")
+    except: speak(f"{USER_NAME}, could not clear clipboard.")
 
-def feat_dice(cmd):
-    m=re.search(r'(\d+)',cmd); sides=max(2,int(m.group(1)) if m else 6)
-    speak(f"Rolling a {sides}-sided die... you got {random.randint(1,sides)}!")
+def feat_coin():
+    speak(f"{USER_NAME}, it is {random.choice(['Heads','Tails'])}!")
 
-def feat_translate(cmd):
-    text=re.sub(r'\b(translate|translation)\b','',cmd,flags=re.IGNORECASE).strip()
-    speak("Opening Google Translate.")
+def feat_dice(sides=6):
+    speak(f"{USER_NAME}, I rolled a {sides}-sided die and got {random.randint(1,sides)}!")
+
+def feat_translate(text=""):
+    speak(f"{USER_NAME}, opening Google Translate.")
     webbrowser.open(f"https://translate.google.com/?text={text}" if text else "https://translate.google.com")
 
 def feat_list_files():
-    items=os.listdir('.')
-    files=[f for f in items if os.path.isfile(f)]; dirs=[f for f in items if os.path.isdir(f)]
-    speak(f"{len(files)} files, {len(dirs)} folders.")
-    info("Files: "+", ".join(files[:8])); info("Folders: "+", ".join(dirs[:6]))
+    items = os.listdir(".")
+    files = [f for f in items if os.path.isfile(f)]
+    dirs  = [f for f in items if os.path.isdir(f)]
+    speak(f"{USER_NAME}, {len(files)} files and {len(dirs)} folders in current directory.")
+    if files: info("Files: "+", ".join(files[:10]))
+    if dirs:  info("Folders: "+", ".join(dirs[:6]))
 
-def feat_volume(cmd):
-    if not IS_WINDOWS: speak("Volume control is Windows only."); return
+def feat_volume(action="status"):
+    if not IS_WINDOWS: speak(f"{USER_NAME}, volume control is Windows only."); return
     try:
-        from ctypes import cast,POINTER
+        from ctypes import cast, POINTER
         from comtypes import CLSCTX_ALL
-        from pycaw.pycaw import AudioUtilities,IAudioEndpointVolume
-        devices=AudioUtilities.GetSpeakers()
-        vol_ctrl=cast(devices.Activate(IAudioEndpointVolume._iid_,CLSCTX_ALL,None),POINTER(IAudioEndpointVolume))
-        if "up" in cmd or "louder" in cmd:
-            v=min(1.0,vol_ctrl.GetMasterVolumeLevelScalar()+0.1); vol_ctrl.SetMasterVolumeLevelScalar(v,None); speak(f"Volume: {int(v*100)}%.")
-        elif "down" in cmd or "quieter" in cmd:
-            v=max(0.0,vol_ctrl.GetMasterVolumeLevelScalar()-0.1); vol_ctrl.SetMasterVolumeLevelScalar(v,None); speak(f"Volume: {int(v*100)}%.")
-        elif "mute"   in cmd: vol_ctrl.SetMute(1,None); speak("Muted.")
-        elif "unmute" in cmd: vol_ctrl.SetMute(0,None); speak("Unmuted.")
-        else: speak(f"Volume is {int(vol_ctrl.GetMasterVolumeLevelScalar()*100)}%.")
-    except ImportError: speak("Run: pip install pycaw")
-    except Exception as e: speak(f"Volume error: {e}")
+        from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
+        dev = AudioUtilities.GetSpeakers()
+        vc  = cast(dev.Activate(IAudioEndpointVolume._iid_,CLSCTX_ALL,None),POINTER(IAudioEndpointVolume))
+        if action == "up":
+            v=min(1.0,vc.GetMasterVolumeLevelScalar()+0.1); vc.SetMasterVolumeLevelScalar(v,None)
+            speak(f"{USER_NAME}, volume is now {int(v*100)}%.")
+        elif action == "down":
+            v=max(0.0,vc.GetMasterVolumeLevelScalar()-0.1); vc.SetMasterVolumeLevelScalar(v,None)
+            speak(f"{USER_NAME}, volume is now {int(v*100)}%.")
+        elif action == "mute":   vc.SetMute(1,None); speak(f"{USER_NAME}, muted.")
+        elif action == "unmute": vc.SetMute(0,None); speak(f"{USER_NAME}, unmuted.")
+        else:
+            v = vc.GetMasterVolumeLevelScalar()
+            speak(f"{USER_NAME}, volume is {int(v*100)}%.")
+    except ImportError: speak(f"{USER_NAME}, run: pip install pycaw")
+    except Exception as e: speak(f"{USER_NAME}, volume error: {e}")
 
 def feat_help():
-    q(_console_write,"""
-PA COMMANDS
-====================================================
-WAKE        : say "hey pa" or "wake" → PA says "Hello Rushindhra!" → speak
-             (if pvporcupine installed, say "porcupine")
-TIME / DATE : what time is it / what is the date
-OPEN SITES  : open youtube / gmail / github / reddit
+    _gui(_cwrite, f"""
+MAX v{VERSION} — {USER_NAME}'s Assistant
+══════════════════════════════════════════════════
+WAKE        : say "hey max" → "Yes {USER_NAME}?"
+TIME/DATE   : what time / what date
+OPEN        : open youtube / open gmail / open chrome
+CLOSE       : close youtube / close gmail / close chrome
 SEARCH      : search python tutorials
 YOUTUBE     : youtube lo-fi music
-WIKIPEDIA   : wikipedia Elon Musk
-DICTIONARY  : define serendipity
-CALCULATOR  : calculate 25 times 4
+WIKIPEDIA   : wikipedia black holes
+DICTIONARY  : define algorithm
+CALCULATE   : calculate 25 times 4
 SCREENSHOT  : take a screenshot
-SYSTEM INFO : system info / cpu / ram / disk / battery
+SYSTEM      : system info / cpu / ram / disk / battery
 NETWORK     : network info / my ip / ping
 LOCK/SLEEP  : lock screen / sleep
-SHUTDOWN    : shutdown / restart / log out
-APPS        : open notepad / calculator / vscode
+SHUTDOWN    : shutdown / restart / logout
 VOLUME      : volume up / down / mute / unmute
-TIMER       : set timer for 10 minutes
-ALARM       : set alarm for 7 30 am
+TIMER       : set timer 5 minutes
+ALARM       : set alarm 7 30 am
 NOTE        : create note
-CLIPBOARD   : clipboard
+CLIPBOARD   : clipboard / clear clipboard
+WEATHER     : weather (needs API key)
+NEWS        : news (needs API key)
 JOKE        : tell me a joke
-QUOTE       : give me a quote
-COIN / DICE : flip a coin / roll a dice
+QUOTE       : inspire me
+COIN/DICE   : flip a coin / roll a dice
 TRANSLATE   : translate hello world
 FILES       : list files
-EXIT        : goodbye / exit / quit
-====================================================
+EXIT        : goodbye
+══════════════════════════════════════════════════
 ""","info")
-    speak("Commands shown in the console.")
+    speak(f"{USER_NAME}, all commands are shown in the console.")
 
 def feat_greet():
-    h=datetime.datetime.now().hour
-    g="Good morning" if h<12 else "Good afternoon" if h<18 else "Good evening"
-    if PORCUPINE_AVAILABLE and _porcupine_handle:
-        speak(f"{g}! I am PA v{VERSION}. Say 'porcupine' to activate me, or type below.")
-    else:
-        speak(f"{g}! I am PA v{VERSION}. Say 'hey pa' to activate me, or type below.")
+    h = datetime.datetime.now().hour
+    g = "Good morning" if h<12 else "Good afternoon" if h<18 else "Good evening"
+    speak(f"{g} {USER_NAME}! I am Max version {VERSION}. Say hey max to wake me up.")
 
-# ── DISPATCHER ────────────────────────────────────────────────────────────────
+# ── dispatch ──────────────────────────────────────────────────────────────────
 def dispatch(cmd):
-    c=cmd.lower().strip()
-    set_status(f"Processing: {c[:38]}...",C['violet'])
-    T=threading.Thread
-    if   re.search(r'\b(time|clock)\b',c) and 'timer' not in c: feat_time()
-    elif re.search(r'\bdate\b',c):           feat_date()
-    elif 'chrome' in c and 'open' in c:      T(target=feat_open_chrome,daemon=True).start();return
-    elif re.search(r'\bopen\b',c):
-        is_site=any(k in c for k in SITES); is_app=any(k in c for k in (APP_MAP_WIN if IS_WINDOWS else APP_MAP_LINUX))
-        if is_site:  T(target=feat_open_site,args=(c,),daemon=True).start();return
-        elif is_app: T(target=feat_open_app,args=(c,),daemon=True).start();return
-        else: feat_open_site(c)
-    elif re.search(r'\b(email|gmail)\b',c):  T(target=feat_open_email,daemon=True).start();return
-    elif re.search(r'\byoutube\b',c):        feat_youtube_search(c)
-    elif re.search(r'\b(search|google|look up|find)\b',c): feat_google_search(c)
-    elif re.search(r'\b(calculate|compute|evaluate|solve)\b',c): feat_calculate(c)
-    elif 'screenshot' in c:                  T(target=feat_screenshot,daemon=True).start();return
-    elif re.search(r'\bsystem info\b',c):    T(target=feat_system_info,daemon=True).start();return
-    elif re.search(r'\b(battery|power)\b',c) and 'lock' not in c: T(target=feat_battery,daemon=True).start();return
-    elif re.search(r'\bcpu\b',c):            T(target=feat_cpu,daemon=True).start();return
-    elif re.search(r'\b(ram|memory)\b',c):   T(target=feat_ram,daemon=True).start();return
-    elif re.search(r'\bdisk\b',c):           T(target=feat_disk,daemon=True).start();return
-    elif re.search(r'\bprocess',c):          T(target=feat_processes,daemon=True).start();return
-    elif re.search(r'\b(network info|hostname|local ip)\b',c): T(target=feat_network,daemon=True).start();return
-    elif re.search(r'\b(my ip|public ip)\b',c): T(target=feat_public_ip,daemon=True).start();return
-    elif re.search(r'\bping\b',c):           T(target=feat_ping,daemon=True).start();return
-    elif re.search(r'\b(lock screen|lock computer|lock pc)\b',c): T(target=feat_lock,daemon=True).start();return
-    elif re.search(r'\b(sleep|hibernate)\b',c): T(target=feat_sleep,daemon=True).start();return
-    elif re.search(r'\b(shutdown|shut down)\b',c): feat_shutdown();return
-    elif re.search(r'\b(restart|reboot)\b',c):     feat_restart();return
-    elif re.search(r'\b(log out|logout|sign out)\b',c): T(target=feat_logout,daemon=True).start();return
-    elif re.search(r'\b(wikipedia|wiki)\b',c): T(target=feat_wikipedia,args=(c,),daemon=True).start();return
-    elif re.search(r'\b(define|definition|meaning|dictionary)\b',c): T(target=feat_define,args=(c,),daemon=True).start();return
-    elif re.search(r'\b(weather|temperature)\b',c): T(target=feat_weather,args=(c,),daemon=True).start();return
-    elif re.search(r'\b(news|headlines)\b',c): T(target=feat_news,daemon=True).start();return
-    elif re.search(r'\bvolume\b',c):         T(target=feat_volume,args=(c,),daemon=True).start();return
-    elif re.search(r'\b(alarm|set alarm)\b',c): T(target=feat_alarm,args=(c,),daemon=True).start();return
-    elif re.search(r'\b(timer|remind me|countdown)\b',c): T(target=feat_timer,args=(c,),daemon=True).start();return
-    elif re.search(r'\b(note|create note|new note)\b',c): ROOT.after(0,feat_note);return
-    elif re.search(r'\b(clipboard|paste)\b',c): feat_clipboard()
-    elif re.search(r'\bjoke\b',c):           T(target=feat_joke,daemon=True).start();return
-    elif re.search(r'\b(quote|inspire)\b',c):T(target=feat_quote,daemon=True).start();return
-    elif re.search(r'\b(flip|coin)\b',c):    feat_coin()
-    elif re.search(r'\b(roll|dice)\b',c):    feat_dice(c)
-    elif re.search(r'\btranslate\b',c):      T(target=feat_translate,args=(c,),daemon=True).start();return
-    elif re.search(r'\b(list files|show files|files)\b',c): T(target=feat_list_files,daemon=True).start();return
-    elif re.search(r'\b(hello|hi)\b',c):     speak("Hello! How can I help you?")
-    elif re.search(r'\bhow are you\b',c):    speak("Running perfectly! What can I do for you?")
-    elif re.search(r'\b(who are you|your name)\b',c): speak(f"I am PA v{VERSION}.")
-    elif re.search(r'\b(thank|thanks)\b',c): speak("You are welcome! Anything else?")
-    elif re.search(r'\b(help|what can you do|commands)\b',c): feat_help()
-    elif re.search(r'\b(bye|exit|quit|goodbye|close)\b',c):
-        speak("Goodbye! Have a wonderful day!"); ROOT.after(2200,ROOT.quit)
-    else: speak("I did not understand. Say help to see all commands.")
-    set_status("Waiting for wake word...",C['txt2'])
+    # ── auto-correct mishearings FIRST ──────────────────────────────────────
+    c = _fuzzy_correct(cmd.lower().strip())
+    set_status("Processing…", C["violet"])
+    T = threading.Thread
 
-# ── CONTROLLER ────────────────────────────────────────────────────────────────
-_running      = False
-_running_lock = threading.Lock()   # protects _running across threads
-_loop_thr     = None
+    # ── CLOSE ────────────────────────────────────────────────────────────────
+    close_match = re.match(r"(close|stop|shut|kill|exit)\s+(.+)", c)
+    if close_match:
+        target = close_match.group(2).strip()
+        for key in SITES:
+            if key in target:
+                T(target=feat_close_site, args=(key,), daemon=True).start(); return
+        if "chrome" in target:
+            T(target=feat_close_chrome, daemon=True).start(); return
+        for key in PROC_MAP:
+            if key in target:
+                T(target=feat_close_app, args=(key,), daemon=True).start(); return
+        speak(f"{USER_NAME}, I could not find what to close."); return
 
-def _is_running() -> bool:
-    with _running_lock:
-        return _running
+    # ── CLEAR CLIPBOARD ──────────────────────────────────────────────────────
+    if re.search(r"clear\s+clipboard", c):
+        T(target=feat_clear_clipboard, daemon=True).start(); return
 
-def _set_running(value: bool) -> None:
-    global _running
-    with _running_lock:
-        _running = value
+    # ── TIME / DATE ──────────────────────────────────────────────────────────
+    if re.search(r"date\s+and\s+time|time\s+and\s+date", c):
+        T(target=feat_datetime, daemon=True).start(); return
+    if re.search(r"what\s+time|current\s+time|tell.*time|time\b", c) and "timer" not in c:
+        T(target=feat_time, daemon=True).start(); return
+    if re.search(r"what.*date|today.*date|current\s+date|what\s+date", c):
+        T(target=feat_date, daemon=True).start(); return
+
+    # ── OPEN ─────────────────────────────────────────────────────────────────
+    if re.search(r"\b(open|launch|start|go\s+to|load|show)\b", c):
+        if "chrome" in c:
+            T(target=feat_open_chrome, daemon=True).start(); return
+        for key in SITES:
+            if key in c:
+                T(target=feat_open_site, args=(key,), daemon=True).start(); return
+        amap = APP_MAP_WIN if IS_WINDOWS else APP_MAP_LINUX
+        for key in amap:
+            if key in c:
+                T(target=feat_open_app, args=(key,), daemon=True).start(); return
+        speak(f"{USER_NAME}, I could not find what to open. Check the corrected line in the console.")
+        return
+
+    # ── YOUTUBE SEARCH ───────────────────────────────────────────────────────
+    if re.search(r"\byoutube\b", c):
+        query = re.sub(r"\b(youtube|play|search|find|watch)\b","",c,flags=re.I).strip()
+        if query: T(target=feat_youtube_search, args=(query,), daemon=True).start()
+        else:     T(target=feat_open_site, args=("youtube",), daemon=True).start()
+        return
+
+    # ── GOOGLE SEARCH ────────────────────────────────────────────────────────
+    if re.search(r"\b(search|google|look\s+up|find)\b", c):
+        query = re.sub(r"\b(search|google|look\s+up|find)\b","",c,flags=re.I).strip()
+        if query: T(target=feat_google_search, args=(query,), daemon=True).start()
+        else:
+            q = ask_text("What to search?")
+            if q: T(target=feat_google_search, args=(q,), daemon=True).start()
+        return
+
+    # ── CALCULATE ────────────────────────────────────────────────────────────
+    if re.search(r"\b(calculate|compute|evaluate|solve|math)\b", c):
+        expr = re.sub(r"\b(calculate|compute|evaluate|solve|math)\b","",c,flags=re.I).strip()
+        T(target=feat_calculate, args=(expr,), daemon=True).start(); return
+
+    # ── SCREENSHOT ───────────────────────────────────────────────────────────
+    if re.search(r"\bscreenshot\b", c):
+        T(target=feat_screenshot, daemon=True).start(); return
+
+    # ── SYSTEM ───────────────────────────────────────────────────────────────
+    if re.search(r"\bsystem\s+info\b", c):
+        T(target=feat_system_info, daemon=True).start(); return
+    if re.search(r"\bbattery\b", c):
+        T(target=feat_battery, daemon=True).start(); return
+    if re.search(r"\bcpu\b", c):
+        T(target=feat_cpu, daemon=True).start(); return
+    if re.search(r"\b(ram|memory)\b", c):
+        T(target=feat_ram, daemon=True).start(); return
+    if re.search(r"\b(disk|storage|hard drive)\b", c):
+        T(target=feat_disk, daemon=True).start(); return
+    if re.search(r"\bprocess", c):
+        T(target=feat_processes, daemon=True).start(); return
+
+    # ── NETWORK ──────────────────────────────────────────────────────────────
+    if re.search(r"\bnetwork\s+info\b", c):
+        T(target=feat_network, daemon=True).start(); return
+    if re.search(r"\b(public\s+ip|my\s+ip|ip\s+address)\b", c):
+        T(target=feat_public_ip, daemon=True).start(); return
+    if re.search(r"\bping\b", c):
+        T(target=feat_ping, daemon=True).start(); return
+
+    # ── POWER ────────────────────────────────────────────────────────────────
+    if re.search(r"\block\s+screen\b", c):
+        T(target=feat_lock, daemon=True).start(); return
+    if re.search(r"\b(sleep|hibernate|suspend)\b", c):
+        T(target=feat_sleep, daemon=True).start(); return
+    if re.search(r"\b(shutdown|shut\s+down|turn\s+off|power\s+off)\b", c):
+        feat_shutdown(); return
+    if re.search(r"\b(restart|reboot)\b", c):
+        feat_restart(); return
+    if re.search(r"\b(log\s*out|sign\s*out)\b", c):
+        T(target=feat_logout, daemon=True).start(); return
+
+    # ── KNOWLEDGE ────────────────────────────────────────────────────────────
+    if re.search(r"\b(wikipedia|wiki)\b", c):
+        query = re.sub(r"\b(wikipedia|wiki|tell\s+me\s+about|who\s+is|what\s+is)\b","",c,flags=re.I).strip()
+        T(target=feat_wikipedia, args=(query,), daemon=True).start(); return
+    if re.search(r"\b(define|definition|meaning|dictionary)\b", c):
+        word = re.sub(r"\b(define|definition|meaning|dictionary)\b","",c,flags=re.I).strip()
+        T(target=feat_define, args=(word,), daemon=True).start(); return
+    if re.search(r"\b(weather|temperature|forecast)\b", c):
+        m = re.search(r"\bin\s+([A-Za-z ]+)$",c)
+        city = m.group(1).strip() if m else "Hyderabad"
+        T(target=feat_weather, args=(city,), daemon=True).start(); return
+    if re.search(r"\b(news|headlines)\b", c):
+        T(target=feat_news, daemon=True).start(); return
+
+    # ── VOLUME ───────────────────────────────────────────────────────────────
+    if re.search(r"\bvolume\b", c):
+        if re.search(r"\b(up|louder|increase)\b",c):      T(target=feat_volume,args=("up",),daemon=True).start()
+        elif re.search(r"\b(down|quieter|decrease)\b",c): T(target=feat_volume,args=("down",),daemon=True).start()
+        elif re.search(r"\bmute\b",c):                    T(target=feat_volume,args=("mute",),daemon=True).start()
+        elif re.search(r"\bunmute\b",c):                  T(target=feat_volume,args=("unmute",),daemon=True).start()
+        else:                                              T(target=feat_volume,args=("status",),daemon=True).start()
+        return
+
+    # ── TIMER ────────────────────────────────────────────────────────────────
+    if re.search(r"\b(set\s+timer|timer\s+for|countdown|start\s+timer)\b", c):
+        m = re.search(r"(\d+)\s*(hour|hours|minute|minutes|second|seconds)",c)
+        if m: T(target=feat_timer,args=(int(m.group(1)),m.group(2)),daemon=True).start()
+        else:
+            v = ask_text("Timer duration (e.g. 5 minutes):")
+            if v:
+                m2 = re.search(r"(\d+)\s*(hour|hours|minute|minutes|second|seconds)",v)
+                if m2: T(target=feat_timer,args=(int(m2.group(1)),m2.group(2)),daemon=True).start()
+        return
+
+    # ── ALARM ────────────────────────────────────────────────────────────────
+    if re.search(r"\b(set\s+alarm|alarm\s+for|wake\s+me)\b", c):
+        m = re.search(r"(\d{1,2})[:\s]?(\d{2})?\s*(am|pm)?",c,re.I)
+        if m:
+            h=int(m.group(1)); mn=int(m.group(2) or 0); mer=(m.group(3) or "").lower()
+            if mer=="pm" and h!=12: h+=12
+            elif mer=="am" and h==12: h=0
+            T(target=feat_alarm,args=(h,mn),daemon=True).start()
+        else:
+            v = ask_text("Alarm time (e.g. 7 30 am):")
+            if v:
+                m2 = re.search(r"(\d{1,2})[:\s]?(\d{2})?\s*(am|pm)?",v,re.I)
+                if m2:
+                    h=int(m2.group(1)); mn=int(m2.group(2) or 0); mer=(m2.group(3) or "").lower()
+                    if mer=="pm" and h!=12: h+=12
+                    elif mer=="am" and h==12: h=0
+                    T(target=feat_alarm,args=(h,mn),daemon=True).start()
+        return
+
+    # ── NOTE ─────────────────────────────────────────────────────────────────
+    if re.search(r"\b(create\s+note|new\s+note|take\s+note|open\s+note|quick\s+note|note\s+down)\b", c):
+        ROOT.after(0, feat_note); return
+
+    # ── CLIPBOARD ────────────────────────────────────────────────────────────
+    if re.search(r"\bclipboard\b", c):
+        T(target=feat_clipboard, daemon=True).start(); return
+
+    # ── FUN ──────────────────────────────────────────────────────────────────
+    if re.search(r"\bjoke\b", c):
+        T(target=feat_joke, daemon=True).start(); return
+    if re.search(r"\b(quote|inspire|motivate|motivation|inspiration)\b", c):
+        T(target=feat_quote, daemon=True).start(); return
+    if re.search(r"\b(flip\s+coin|toss\s+coin|heads\s+or\s+tails|coin\s+toss)\b", c):
+        T(target=feat_coin, daemon=True).start(); return
+    if re.search(r"\b(roll\s+dice|roll\s+die|roll\s+the\s+dice)\b", c):
+        m = re.search(r"(\d+)",c); sides = int(m.group(1)) if m else 6
+        T(target=feat_dice, args=(sides,), daemon=True).start(); return
+    if re.search(r"\btranslate\b", c):
+        text = re.sub(r"\btranslate\b","",c,flags=re.I).strip()
+        T(target=feat_translate, args=(text,), daemon=True).start(); return
+    if re.search(r"\blist\s+files\b", c):
+        T(target=feat_list_files, daemon=True).start(); return
+
+    # ── CHAT ─────────────────────────────────────────────────────────────────
+    if re.search(r"\b(hello|hi\s+max|hey\s+there|hi\s+there)\b", c):
+        T(target=lambda:speak(f"Hello {USER_NAME}! How can I help you?"),daemon=True).start(); return
+    if re.search(r"\bhow\s+are\s+you\b", c):
+        T(target=lambda:speak(f"I am running perfectly, {USER_NAME}! Ready to help."),daemon=True).start(); return
+    if re.search(r"\b(who\s+are\s+you|your\s+name|what\s+are\s+you|tell\s+me\s+about\s+yourself)\b", c):
+        T(target=lambda:speak(f"I am Max, your personal assistant, {USER_NAME}. Version {VERSION}."),daemon=True).start(); return
+    if re.search(r"\b(thank\s+you|thanks|many\s+thanks)\b", c):
+        T(target=lambda:speak(f"You are welcome, {USER_NAME}!"),daemon=True).start(); return
+    if re.search(r"\b(help|halp|helf|hep|kelp|hepl|hulp|hilp|holp|hlp|hlep|commands|guide|manual|features|capabilities|instructions)\b", c):
+        T(target=feat_help, daemon=True).start(); return
+    if re.search(r"\b(bye|goodbye|see\s+you|exit\s+max|stop\s+max|close\s+max)\b", c):
+        def _bye():
+            speak(f"Goodbye {USER_NAME}! Have a great day!")
+            time.sleep(3); ROOT.after(0, ROOT.quit)
+        T(target=_bye, daemon=True).start(); return
+
+    # ── unknown ──────────────────────────────────────────────────────────────
+    T(target=lambda:speak(f"{USER_NAME}, I heard '{cmd}' but did not understand. Say help to see all commands."),daemon=True).start()
+    set_status(f"Say '{WAKE_WORD}'…", C["txt2"])
+
+# ── main loop ─────────────────────────────────────────────────────────────────
+_running  = False
+_loop_thr = None
 
 def start_pa():
-    global _loop_thr
-    with _running_lock:
-        global _running
-        if _running:
-            return
-        _running = True
-    q(start_btn.config, state=tk.DISABLED, bg=C['txt2'])
-    q(stop_btn.config,  state=tk.NORMAL,   bg=C['coral'])
+    global _running, _loop_thr
+    if _running: return
+    _running = True
+    _gui(lambda: start_btn.config(state=tk.DISABLED, bg=C["txt2"]))
+    _gui(lambda: stop_btn.config(state=tk.NORMAL,    bg=C["coral"]))
     _loop_thr = threading.Thread(target=_main_loop, daemon=True)
     _loop_thr.start()
 
 def stop_pa():
-    _set_running(False)
-    start_btn.config(state=tk.NORMAL,   bg=C['mint'])
-    stop_btn.config( state=tk.DISABLED, bg=C['txt2'])
-    set_wake_led('idle')
-    set_status("Stopped", C['gold'])
-    warn("PA stopped. Click Start to resume.")
+    global _running
+    _running = False
+    start_btn.config(state=tk.NORMAL,  bg=C["mint"])
+    stop_btn.config(state=tk.DISABLED, bg=C["txt2"])
+    set_wake_led("idle")
+    set_status("Stopped", C["gold"])
+    speak(f"Max stopped, {USER_NAME}. Click Start to resume.")
 
 def _main_loop():
+    global _running
     feat_greet()
-
-    if not _mic_available():
-        warn("No mic. Run: pip install sounddevice numpy")
-        set_status("No mic — use text input", C['orange'])
-        q(start_btn.config, state=tk.NORMAL,   bg=C['mint'])
-        q(stop_btn.config,  state=tk.DISABLED, bg=C['txt2'])
-        _set_running(False)
-        return
-
-    # Calibrate ONCE here — not inside any recording function
-    if SOUNDDEVICE_AVAILABLE:
-        _calibrate_sounddevice()
-
-    # Try to load pvporcupine offline wake word engine
-    if PORCUPINE_AVAILABLE:
-        _init_porcupine()
-
-    if _porcupine_handle:
-        info("pvporcupine active — say 'porcupine' to wake PA.")
-    else:
-        info('Google Speech wake word active — say "hey pa" to wake PA.')
-
-    while _is_running():
-        set_status("Waiting for wake word...", C['txt2'])
-        set_wake_led('scanning')
-        q(_console_write, "\n  Listening for wake word...\n", "dim")
-
+    if not _mic_ok():
+        speak(f"{USER_NAME}, no microphone found. Install sounddevice.")
+        _gui(lambda: start_btn.config(state=tk.NORMAL,  bg=C["mint"]))
+        _gui(lambda: stop_btn.config(state=tk.DISABLED, bg=C["txt2"]))
+        _running = False; return
+    if not SR_AVAILABLE:
+        speak(f"{USER_NAME}, SpeechRecognition missing. Run pip install SpeechRecognition.")
+        _gui(lambda: start_btn.config(state=tk.NORMAL,  bg=C["mint"]))
+        _gui(lambda: stop_btn.config(state=tk.DISABLED, bg=C["txt2"]))
+        _running = False; return
+    if SOUNDDEVICE_AVAILABLE: _calibrate()
+    info(f'Say "{WAKE_WORD}" — corrections shown in dim text')
+    while _running:
+        set_status(f"Waiting for '{WAKE_WORD}'…", C["txt2"])
+        set_wake_led("scanning")
+        _gui(_cwrite, f'\n  Listening for "{WAKE_WORD}"…\n', "dim")
         woke = False
-        while _is_running():
-            result = scan_once()
-            if result == "no_mic":
-                warn("Microphone disconnected.")
-                _set_running(False)
-                q(start_btn.config, state=tk.NORMAL,   bg=C['mint'])
-                q(stop_btn.config,  state=tk.DISABLED, bg=C['txt2'])
+        while _running:
+            r = scan_once()
+            if r == "no_mic":
+                speak(f"{USER_NAME}, microphone disconnected.")
+                _running = False
+                _gui(lambda: start_btn.config(state=tk.NORMAL,  bg=C["mint"]))
+                _gui(lambda: stop_btn.config(state=tk.DISABLED, bg=C["txt2"]))
                 break
-            if result == "woke":
-                set_wake_led('heard')
-                q(_console_write, "  Wake word detected!\n", "ok")
-                _tts_q.put("Hello Rushindhra!")
-                q(_console_write, "[PA] Hello Rushindhra!\n", "pa")
+            if r == "woke":
+                set_wake_led("heard")
+                _gui(_cwrite, "  Wake word detected!\n", "ok")
+                speak(f"Yes {USER_NAME}?")
                 woke = True; break
-
-        if not _is_running(): break
+        if not _running: break
         if not woke: continue
-
         _tts_q.join()
-        set_status("Listening for command...", C['coral'])
-        set_wake_led('listening')
-        q(_console_write, "  Listening for command...\n", "dim")
-
-        command = capture_voice(duration=COMMAND_DURATION_SEC, wake_scan=False)
-        if not _is_running(): break
-
+        set_status("Listening for command…", C["coral"])
+        set_wake_led("listening")
+        _gui(_cwrite, "  Listening for command…\n", "dim")
+        command = capture_voice(duration=7)
+        if not _running: break
         if command and command != "NO_MIC":
             user_echo(command); dispatch(command)
         elif command == "NO_MIC":
-            warn("Microphone unavailable.")
-        else:
-            speak("I did not catch that. Please try again.")
+            speak(f"{USER_NAME}, microphone unavailable.")
+    set_wake_led("idle")
+    set_status("Max stopped.", C["gold"])
 
-    set_wake_led('idle')
-    set_status("PA stopped.", C['gold'])
+# ── GUI ───────────────────────────────────────────────────────────────────────
+def _mk_btn(p,t,c,bg,fg=None,w=20):
+    return tk.Button(p,text=t,command=c,bg=bg,fg=fg or C["bg0"],font=FNT_BTN,
+                     relief="flat",width=w,height=1,cursor="hand2",
+                     activebackground=C["bg4"],activeforeground=C["txt0"],bd=0,padx=4)
 
-# ── GUI HELPERS ───────────────────────────────────────────────────────────────
-def _mk_btn(parent, text, cmd, bg, fg=None, w=20):
-    return tk.Button(parent, text=text, command=cmd, bg=bg, fg=fg or C['bg0'],
-                     font=FNT_BTN, relief='flat', width=w, height=1, cursor='hand2',
-                     activebackground=C['bg4'], activeforeground=C['txt0'], bd=0, padx=4)
+def _sec(p,t):
+    f=tk.Frame(p,bg=C["bg1"]); f.pack(fill="x",padx=10,pady=(10,2))
+    tk.Label(f,text=f"  {t}",font=("Helvetica Neue",7,"bold"),
+             fg=C["txt2"],bg=C["bg1"],anchor="w").pack(fill="x")
+    tk.Frame(f,bg=C["border"],height=1).pack(fill="x",pady=(2,0))
 
-def _section_label(parent, text):
-    frm=tk.Frame(parent,bg=C['bg1']); frm.pack(fill='x',padx=10,pady=(10,2))
-    tk.Label(frm,text=f"  {text}",font=("Helvetica Neue",7,"bold"),
-             fg=C['txt2'],bg=C['bg1'],anchor='w').pack(fill='x')
-    tk.Frame(frm,bg=C['border'],height=1).pack(fill='x',pady=(2,0))
+def _sbtn(p,t,c,col=None):
+    b=tk.Button(p,text=t,command=c,bg=col or C["bg3"],fg=C["txt1"],
+                font=("Helvetica Neue",8,"bold"),relief="flat",anchor="w",
+                cursor="hand2",width=24,padx=10,pady=3,
+                activebackground=C["bg4"],activeforeground=C["txt0"])
+    b.pack(fill="x",padx=10,pady=1); return b
 
-def _side_btn(parent, text, cmd, color=None):
-    b=tk.Button(parent,text=text,command=cmd,bg=color or C['bg3'],fg=C['txt1'],
-                font=("Helvetica Neue",8,"bold"),relief='flat',anchor='w',
-                cursor='hand2',width=24,padx=10,pady=3,
-                activebackground=C['bg4'],activeforeground=C['txt0'])
-    b.pack(fill='x',padx=10,pady=1); return b
+def qr(fn,*a): threading.Thread(target=fn,args=a,daemon=True).start()
 
-def qr(fn, *args): threading.Thread(target=fn, args=args, daemon=True).start()
-
-def _do_oneshot_voice():
+def _oneshot():
     def _r():
-        if not _mic_available(): err("Run: pip install sounddevice numpy"); return
-        set_status("Listening...", C['coral'])
-        result = capture_voice(duration=6, wake_scan=False)
-        if result and result != "NO_MIC": user_echo(result); dispatch(result)
-        elif result == "NO_MIC": err("No mic backend.")
-        else: warn("Nothing heard."); set_status("Ready", C['mint'])
-    threading.Thread(target=_r, daemon=True).start()
+        if not _mic_ok(): speak(f"{USER_NAME}, no mic found."); return
+        set_status("Listening…",C["coral"])
+        r = capture_voice()
+        if r and r!="NO_MIC": user_echo(r); dispatch(r)
+        elif r=="NO_MIC": speak(f"{USER_NAME}, no microphone.")
+    threading.Thread(target=_r,daemon=True).start()
 
-def _do_text_input():
+def _textcmd():
     def _r():
-        cmd=ask_text("Enter your command:")
-        if cmd and cmd.strip(): user_echo(cmd); dispatch(cmd.lower().strip())
-    threading.Thread(target=_r, daemon=True).start()
+        c = ask_text(f"Enter command, {USER_NAME}:")
+        if c: user_echo(c); dispatch(c.lower())
+    threading.Thread(target=_r,daemon=True).start()
 
-def _do_calc_prompt():
+def _calc_prompt():
     def _r():
-        expr=ask_text("Enter expression (e.g. 25 * 4 + 10):","Calculator")
-        if expr and expr.strip(): feat_calculate(f"calculate {expr}")
-    threading.Thread(target=_r, daemon=True).start()
+        e = ask_text("Expression (e.g. 25 * 4):","Calculator")
+        if e: feat_calculate(e)
+    threading.Thread(target=_r,daemon=True).start()
 
-def _do_wiki_prompt():
+def _wiki_prompt():
     def _r():
-        query=ask_text("Search Wikipedia:","Wikipedia")
-        if query and query.strip(): feat_wikipedia(f"wikipedia {query}")
-    threading.Thread(target=_r, daemon=True).start()
+        q = ask_text("Search Wikipedia:","Wikipedia")
+        if q: feat_wikipedia(q)
+    threading.Thread(target=_r,daemon=True).start()
 
-def _do_define_prompt():
+def _defn_prompt():
     def _r():
-        word=ask_text("Define which word?","Dictionary")
-        if word and word.strip(): feat_define(f"define {word}")
-    threading.Thread(target=_r, daemon=True).start()
+        w = ask_text("Define word:","Dictionary")
+        if w: feat_define(w)
+    threading.Thread(target=_r,daemon=True).start()
 
-def _do_timer_prompt():
+def _timer_prompt():
     def _r():
-        val=ask_text("Timer duration (e.g. 5 minutes):","Timer")
-        if val and val.strip(): feat_timer(f"set timer for {val}")
-    threading.Thread(target=_r, daemon=True).start()
+        v = ask_text("Duration (e.g. 5 minutes):","Timer")
+        if v:
+            m = re.search(r"(\d+)\s*(hour|hours|minute|minutes|second|seconds)",v)
+            if m: feat_timer(int(m.group(1)), m.group(2))
+    threading.Thread(target=_r,daemon=True).start()
 
-def _do_alarm_prompt():
+def _alarm_prompt():
     def _r():
-        val=ask_text("Alarm time (e.g. 7 30 am):","Alarm")
-        if val and val.strip(): feat_alarm(f"set alarm for {val}")
-    threading.Thread(target=_r, daemon=True).start()
+        v = ask_text("Alarm time (e.g. 7 30 am):","Alarm")
+        if v:
+            m = re.search(r"(\d{1,2})[:\s]?(\d{2})?\s*(am|pm)?",v,re.I)
+            if m:
+                h=int(m.group(1)); mn=int(m.group(2) or 0); mer=(m.group(3) or "").lower()
+                if mer=="pm" and h!=12: h+=12
+                elif mer=="am" and h==12: h=0
+                feat_alarm(h,mn)
+    threading.Thread(target=_r,daemon=True).start()
 
-def _do_youtube_search():
+def _yt_prompt():
     def _r():
-        qs=ask_text("Search YouTube for:","YouTube")
-        if qs: feat_youtube_search(f"youtube {qs}")
-    threading.Thread(target=_r, daemon=True).start()
+        q = ask_text("Search YouTube:","YouTube")
+        if q: feat_youtube_search(q)
+    threading.Thread(target=_r,daemon=True).start()
 
-def _do_google_search():
+def _gs_prompt():
     def _r():
-        qs=ask_text("Search Google for:","Google Search")
-        if qs: feat_google_search(f"search {qs}")
-    threading.Thread(target=_r, daemon=True).start()
+        q = ask_text("Search Google:","Google")
+        if q: feat_google_search(q)
+    threading.Thread(target=_r,daemon=True).start()
 
-# ── BUILD GUI ─────────────────────────────────────────────────────────────────
-ROOT=tk.Tk()
-ROOT.title(f"PA — Personal Assistant v{VERSION}")
-ROOT.geometry("1060x760"); ROOT.configure(bg=C['bg0']); ROOT.resizable(True,True)
+def _trans_prompt():
+    def _r():
+        t = ask_text("Text to translate:","Translate")
+        if t: feat_translate(t)
+    threading.Thread(target=_r,daemon=True).start()
+
+ROOT = tk.Tk()
+ROOT.title(f"Max — {USER_NAME}'s Assistant v{VERSION}")
+ROOT.geometry("1060x760"); ROOT.configure(bg=C["bg0"]); ROOT.resizable(True,True)
 ROOT.update_idletasks()
-sw,sh=ROOT.winfo_screenwidth(),ROOT.winfo_screenheight()
+sw,sh = ROOT.winfo_screenwidth(), ROOT.winfo_screenheight()
 ROOT.geometry(f"1060x760+{(sw-1060)//2}+{(sh-760)//2}")
 
-tk.Frame(ROOT,bg=C['gold'],height=3).pack(fill='x',side='top')
-hdr=tk.Frame(ROOT,bg=C['bg0']); hdr.pack(fill='x')
-hdr_left=tk.Frame(hdr,bg=C['bg0']); hdr_left.pack(side=tk.LEFT,padx=20,pady=10)
-tk.Label(hdr_left,text="PA",font=("Helvetica Neue",36,"bold"),fg=C['gold'],bg=C['bg0']).pack(side=tk.LEFT)
-tk.Label(hdr_left,text=f"  Personal Assistant  v{VERSION}",font=("Helvetica Neue",11),fg=C['txt2'],bg=C['bg0']).pack(side=tk.LEFT,pady=(12,0))
-hdr_right=tk.Frame(hdr,bg=C['bg0']); hdr_right.pack(side=tk.RIGHT,padx=20)
-wake_led=tk.Label(hdr_right,text="IDLE",font=("Helvetica Neue",9,"bold"),fg=C['txt2'],bg=C['bg0'])
-wake_led.pack(anchor='e')
-clock_var=tk.StringVar(value="")
-tk.Label(hdr_right,textvariable=clock_var,font=("Courier New",9),fg=C['txt2'],bg=C['bg0']).pack(anchor='e')
-tk.Label(hdr,text='Say "hey pa" or "wake" to activate  |  or type below',font=("Helvetica Neue",9,"italic"),fg=C['gold_dim'],bg=C['bg0']).pack(side=tk.LEFT,padx=6)
-def _tick(): clock_var.set(datetime.datetime.now().strftime("  %a %b %d  %H:%M:%S")); ROOT.after(1000,_tick)
+tk.Frame(ROOT,bg=C["gold"],height=3).pack(fill="x",side="top")
+hdr=tk.Frame(ROOT,bg=C["bg0"]); hdr.pack(fill="x")
+hl=tk.Frame(hdr,bg=C["bg0"]); hl.pack(side=tk.LEFT,padx=20,pady=10)
+tk.Label(hl,text="MAX",font=("Helvetica Neue",36,"bold"),fg=C["gold"],bg=C["bg0"]).pack(side=tk.LEFT)
+tk.Label(hl,text=f"  {USER_NAME}'s Assistant  v{VERSION}",font=("Helvetica Neue",11),fg=C["txt2"],bg=C["bg0"]).pack(side=tk.LEFT,pady=(12,0))
+hr=tk.Frame(hdr,bg=C["bg0"]); hr.pack(side=tk.RIGHT,padx=20)
+wake_led=tk.Label(hr,text="IDLE",font=("Helvetica Neue",9,"bold"),fg=C["txt2"],bg=C["bg0"]); wake_led.pack(anchor="e")
+cv=tk.StringVar(value="")
+tk.Label(hr,textvariable=cv,font=("Courier New",9),fg=C["txt2"],bg=C["bg0"]).pack(anchor="e")
+tk.Label(hdr,text=f'Say "{WAKE_WORD}" → "Yes {USER_NAME}?"',
+         font=("Helvetica Neue",9,"italic"),fg=C["gold_dim"],bg=C["bg0"]).pack(side=tk.LEFT,padx=6)
+def _tick(): cv.set(datetime.datetime.now().strftime("  %a %b %d  %H:%M:%S")); ROOT.after(1000,_tick)
 _tick()
 
-tk.Frame(ROOT,bg=C['border'],height=1).pack(fill='x')
-sbar=tk.Frame(ROOT,bg=C['bg1'],height=24); sbar.pack(fill='x')
-status_var=tk.StringVar(value="Initialising...")
-status_lbl=tk.Label(sbar,textvariable=status_var,font=("Helvetica Neue",8),fg=C['teal'],bg=C['bg1'],anchor='w',padx=14)
-status_lbl.pack(side=tk.LEFT)
-for label,ok in [("TTS",TTS_AVAILABLE),("Porc",PORCUPINE_AVAILABLE),("SD",SOUNDDEVICE_AVAILABLE),
-                 ("SR",SR_AVAILABLE),("psutil",PSUTIL_AVAILABLE),("wiki",WIKI_AVAILABLE)]:
-    tk.Label(sbar,text=label,font=("Helvetica Neue",7,"bold"),
-             fg=C['mint'] if ok else C['coral'],bg=C['bg1']).pack(side=tk.RIGHT,padx=4)
-tk.Label(sbar,text="  libs: ",font=("Helvetica Neue",7),fg=C['txt2'],bg=C['bg1']).pack(side=tk.RIGHT)
-tk.Frame(ROOT,bg=C['border'],height=1).pack(fill='x')
+tk.Frame(ROOT,bg=C["border"],height=1).pack(fill="x")
+sb=tk.Frame(ROOT,bg=C["bg1"],height=24); sb.pack(fill="x")
+status_var=tk.StringVar(value="Initialising…")
+status_lbl=tk.Label(sb,textvariable=status_var,font=("Helvetica Neue",8),
+                    fg=C["teal"],bg=C["bg1"],anchor="w",padx=14); status_lbl.pack(side=tk.LEFT)
+for lbl,ok in [("TTS",TTS_AVAILABLE),("SD",SOUNDDEVICE_AVAILABLE),
+               ("SR",SR_AVAILABLE),("psutil",PSUTIL_AVAILABLE),
+               ("wiki",WIKI_AVAILABLE),("pgw",PYGETWINDOW_AVAILABLE)]:
+    tk.Label(sb,text=lbl,font=("Helvetica Neue",7,"bold"),
+             fg=C["mint"] if ok else C["coral"],bg=C["bg1"]).pack(side=tk.RIGHT,padx=4)
+tk.Label(sb,text="  libs: ",font=("Helvetica Neue",7),fg=C["txt2"],bg=C["bg1"]).pack(side=tk.RIGHT)
+tk.Frame(ROOT,bg=C["border"],height=1).pack(fill="x")
 
-body=tk.Frame(ROOT,bg=C['bg0']); body.pack(fill='both',expand=True)
-sidebar=tk.Frame(body,bg=C['bg1'],width=220); sidebar.pack(side=tk.LEFT,fill='y'); sidebar.pack_propagate(False)
-sb_canvas=tk.Canvas(sidebar,bg=C['bg1'],highlightthickness=0,bd=0); sb_canvas.pack(side=tk.LEFT,fill='both',expand=True)
-sb_scroll=tk.Scrollbar(sidebar,orient='vertical',command=sb_canvas.yview); sb_scroll.pack(side=tk.RIGHT,fill='y')
-sb_canvas.configure(yscrollcommand=sb_scroll.set)
-sb_inner=tk.Frame(sb_canvas,bg=C['bg1'])
-sb_win=sb_canvas.create_window((0,0),window=sb_inner,anchor='nw')
-def _sb_cfg(e): sb_canvas.configure(scrollregion=sb_canvas.bbox("all")); sb_canvas.itemconfig(sb_win,width=e.width)
-sb_inner.bind('<Configure>',_sb_cfg)
-sb_canvas.bind('<Configure>',lambda e:sb_canvas.itemconfig(sb_win,width=e.width))
-sb_canvas.bind_all("<MouseWheel>",lambda e:sb_canvas.yview_scroll(int(-1*(e.delta/120)),"units"))
+body=tk.Frame(ROOT,bg=C["bg0"]); body.pack(fill="both",expand=True)
+side=tk.Frame(body,bg=C["bg1"],width=220); side.pack(side=tk.LEFT,fill="y"); side.pack_propagate(False)
+sbc=tk.Canvas(side,bg=C["bg1"],highlightthickness=0,bd=0); sbc.pack(side=tk.LEFT,fill="both",expand=True)
+sbs=tk.Scrollbar(side,orient="vertical",command=sbc.yview); sbs.pack(side=tk.RIGHT,fill="y")
+sbc.configure(yscrollcommand=sbs.set)
+sbi=tk.Frame(sbc,bg=C["bg1"]); sbw=sbc.create_window((0,0),window=sbi,anchor="nw")
+def _sbcfg(e): sbc.configure(scrollregion=sbc.bbox("all")); sbc.itemconfig(sbw,width=e.width)
+sbi.bind("<Configure>",_sbcfg); sbc.bind("<Configure>",lambda e:sbc.itemconfig(sbw,width=e.width))
+sbc.bind_all("<MouseWheel>",lambda e:sbc.yview_scroll(int(-1*(e.delta/120)),"units"))
 
-_section_label(sb_inner,"CONTROL")
-start_btn=_mk_btn(sb_inner,"  Start PA",start_pa,C['mint'],C['bg0'],w=22); start_btn.pack(fill='x',padx=10,pady=2)
-stop_btn =_mk_btn(sb_inner,"  Stop PA", stop_pa, C['txt2'],'white',  w=22); stop_btn.pack(fill='x',padx=10,pady=2)
+_sec(sbi,"CONTROL")
+start_btn=_mk_btn(sbi,"  Start Max",start_pa,C["mint"],C["bg0"],22); start_btn.pack(fill="x",padx=10,pady=2)
+stop_btn =_mk_btn(sbi,"  Stop Max", stop_pa, C["txt2"],"white",22); stop_btn.pack(fill="x",padx=10,pady=2)
 stop_btn.config(state=tk.DISABLED)
-voice_row=tk.Frame(sb_inner,bg=C['bg1']); voice_row.pack(fill='x',padx=10,pady=2)
-for txt,cmd,bg in [("Mic Voice",_do_oneshot_voice,C['coral']),("Text Input",_do_text_input,C['teal'])]:
-    tk.Button(voice_row,text=txt,command=cmd,bg=bg,fg=C['bg0'],font=("Helvetica Neue",8,"bold"),
-              relief='flat',cursor='hand2',padx=6,pady=4,activebackground=C['bg4'],
-              activeforeground=C['txt0']).pack(side=tk.LEFT,expand=True,fill='x',padx=1)
-_side_btn(sb_inner,"Test Voice",lambda:qr(lambda:speak("Hello! PA voice is working perfectly.")),C['bg3'])
+vr=tk.Frame(sbi,bg=C["bg1"]); vr.pack(fill="x",padx=10,pady=2)
+for t,c,bg in [("Mic Voice",_oneshot,C["coral"]),("Text Input",_textcmd,C["teal"])]:
+    tk.Button(vr,text=t,command=c,bg=bg,fg=C["bg0"],font=("Helvetica Neue",8,"bold"),
+              relief="flat",cursor="hand2",padx=6,pady=4,
+              activebackground=C["bg4"],activeforeground=C["txt0"]).pack(side=tk.LEFT,expand=True,fill="x",padx=1)
+_sbtn(sbi,"Test Voice",lambda:qr(lambda:speak(f"Hello {USER_NAME}! Max is working.")),C["bg3"])
 
-_section_label(sb_inner,"TIME & DATE")
-_side_btn(sb_inner,"Current Time",lambda:qr(feat_time))
-_side_btn(sb_inner,"Current Date",lambda:qr(feat_date))
-_side_btn(sb_inner,"Date & Time", lambda:qr(feat_datetime))
+_sec(sbi,"TIME & DATE")
+_sbtn(sbi,"Current Time", lambda:qr(feat_time))
+_sbtn(sbi,"Current Date", lambda:qr(feat_date))
+_sbtn(sbi,"Date & Time",  lambda:qr(feat_datetime))
 
-_section_label(sb_inner,"WEB & SOCIAL")
-_side_btn(sb_inner,"Google Search",  _do_google_search)
-_side_btn(sb_inner,"YouTube Search", _do_youtube_search)
-_side_btn(sb_inner,"Open YouTube",   lambda:qr(lambda:(speak("Opening YouTube."),webbrowser.open("https://www.youtube.com"))))
-_side_btn(sb_inner,"LinkedIn",       lambda:qr(lambda:(speak("Opening LinkedIn."),webbrowser.open("https://linkedin.com"))))
-_side_btn(sb_inner,"GitHub",         lambda:qr(lambda:(speak("Opening GitHub."),webbrowser.open("https://github.com"))))
-_side_btn(sb_inner,"Gmail / Email",  lambda:qr(feat_open_email))
-_side_btn(sb_inner,"Chrome",         lambda:qr(feat_open_chrome))
-_side_btn(sb_inner,"WhatsApp Web",   lambda:qr(lambda:(speak("Opening WhatsApp."),webbrowser.open("https://web.whatsapp.com"))))
-_side_btn(sb_inner,"Spotify",        lambda:qr(lambda:(speak("Opening Spotify."),webbrowser.open("https://open.spotify.com"))))
-_side_btn(sb_inner,"Discord",        lambda:qr(lambda:(speak("Opening Discord."),webbrowser.open("https://discord.com/app"))))
-_side_btn(sb_inner,"Instagram",      lambda:qr(lambda:(speak("Opening Instagram."),webbrowser.open("https://instagram.com"))))
+_sec(sbi,"WEB — OPEN")
+_sbtn(sbi,"Google Search",  _gs_prompt)
+_sbtn(sbi,"YouTube Search", _yt_prompt)
+_sbtn(sbi,"YouTube",    lambda:qr(feat_open_site,"youtube"))
+_sbtn(sbi,"Gmail",      lambda:qr(feat_open_site,"gmail"))
+_sbtn(sbi,"GitHub",     lambda:qr(feat_open_site,"github"))
+_sbtn(sbi,"LinkedIn",   lambda:qr(feat_open_site,"linkedin"))
+_sbtn(sbi,"WhatsApp",   lambda:qr(feat_open_site,"whatsapp"))
+_sbtn(sbi,"Instagram",  lambda:qr(feat_open_site,"instagram"))
+_sbtn(sbi,"Discord",    lambda:qr(feat_open_site,"discord"))
+_sbtn(sbi,"Spotify",    lambda:qr(feat_open_site,"spotify"))
+_sbtn(sbi,"ChatGPT",    lambda:qr(feat_open_site,"chatgpt"))
+_sbtn(sbi,"Gemini",     lambda:qr(feat_open_site,"gemini"))
+_sbtn(sbi,"Reddit",     lambda:qr(feat_open_site,"reddit"))
+_sbtn(sbi,"Netflix",    lambda:qr(feat_open_site,"netflix"))
 
-_section_label(sb_inner,"SYSTEM INFO")
-_side_btn(sb_inner,"System Info",  lambda:qr(feat_system_info))
-_side_btn(sb_inner,"Battery",      lambda:qr(feat_battery))
-_side_btn(sb_inner,"CPU Usage",    lambda:qr(feat_cpu))
-_side_btn(sb_inner,"RAM Usage",    lambda:qr(feat_ram))
-_side_btn(sb_inner,"Disk Usage",   lambda:qr(feat_disk))
-_side_btn(sb_inner,"Processes",    lambda:qr(feat_processes))
-_side_btn(sb_inner,"Network Info", lambda:qr(feat_network))
-_side_btn(sb_inner,"Public IP",    lambda:qr(feat_public_ip))
-_side_btn(sb_inner,"Ping Test",    lambda:qr(feat_ping))
+_sec(sbi,"WEB — CLOSE TAB")
+_sbtn(sbi,"Close YouTube",   lambda:qr(feat_close_site,"youtube"))
+_sbtn(sbi,"Close Gmail",     lambda:qr(feat_close_site,"gmail"))
+_sbtn(sbi,"Close GitHub",    lambda:qr(feat_close_site,"github"))
+_sbtn(sbi,"Close LinkedIn",  lambda:qr(feat_close_site,"linkedin"))
+_sbtn(sbi,"Close WhatsApp",  lambda:qr(feat_close_site,"whatsapp"))
+_sbtn(sbi,"Close Instagram", lambda:qr(feat_close_site,"instagram"))
+_sbtn(sbi,"Close Discord",   lambda:qr(feat_close_site,"discord"))
+_sbtn(sbi,"Close Spotify",   lambda:qr(feat_close_site,"spotify"))
+_sbtn(sbi,"Close ChatGPT",   lambda:qr(feat_close_site,"chatgpt"))
+_sbtn(sbi,"Close Gemini",    lambda:qr(feat_close_site,"gemini"))
 
-_section_label(sb_inner,"POWER")
-_side_btn(sb_inner,"Lock Screen",     lambda:qr(feat_lock),  C['bg3'])
-_side_btn(sb_inner,"Sleep / Suspend", lambda:qr(feat_sleep), C['bg3'])
-_side_btn(sb_inner,"Restart",         feat_restart,          C['bg3'])
-_side_btn(sb_inner,"Log Out",         lambda:qr(feat_logout),C['bg3'])
-_side_btn(sb_inner,"Shutdown",        feat_shutdown,         C['bg3'])
+_sec(sbi,"CHROME")
+_sbtn(sbi,"Open Chrome",  lambda:qr(feat_open_chrome))
+_sbtn(sbi,"Close Chrome", lambda:qr(feat_close_chrome))
 
-_section_label(sb_inner,"TOOLS")
-_side_btn(sb_inner,"Calculator",_do_calc_prompt)
-_side_btn(sb_inner,"Screenshot", lambda:qr(feat_screenshot))
-_side_btn(sb_inner,"Set Timer",  _do_timer_prompt)
-_side_btn(sb_inner,"Set Alarm",  _do_alarm_prompt)
-_side_btn(sb_inner,"Quick Note", lambda:ROOT.after(0,feat_note))
-_side_btn(sb_inner,"Clipboard",  feat_clipboard)
-_side_btn(sb_inner,"Volume",     lambda:qr(lambda:feat_volume("status")))
+_sec(sbi,"APPS — OPEN")
+_sbtn(sbi,"Notepad",     lambda:qr(feat_open_app,"notepad"))
+_sbtn(sbi,"Calculator",  lambda:qr(feat_open_app,"calculator"))
+_sbtn(sbi,"VS Code",     lambda:qr(feat_open_app,"vscode"))
+_sbtn(sbi,"Firefox",     lambda:qr(feat_open_app,"firefox"))
+_sbtn(sbi,"Paint",       lambda:qr(feat_open_app,"paint"))
+_sbtn(sbi,"Word",        lambda:qr(feat_open_app,"word"))
+_sbtn(sbi,"Excel",       lambda:qr(feat_open_app,"excel"))
+_sbtn(sbi,"PowerPoint",  lambda:qr(feat_open_app,"powerpoint"))
 
-_section_label(sb_inner,"KNOWLEDGE")
-_side_btn(sb_inner,"Wikipedia",  _do_wiki_prompt)
-_side_btn(sb_inner,"Dictionary", _do_define_prompt)
-_side_btn(sb_inner,"Weather",    lambda:qr(feat_weather))
-_side_btn(sb_inner,"News",       lambda:qr(feat_news))
-_side_btn(sb_inner,"Translate",  lambda:(lambda t:feat_translate(f"translate {t}") if t else None)(ask_text("Text to translate:","Translate")))
+_sec(sbi,"APPS — CLOSE")
+_sbtn(sbi,"Close Notepad",    lambda:qr(feat_close_app,"notepad"))
+_sbtn(sbi,"Close Calculator", lambda:qr(feat_close_app,"calculator"))
+_sbtn(sbi,"Close VS Code",    lambda:qr(feat_close_app,"vscode"))
+_sbtn(sbi,"Close Firefox",    lambda:qr(feat_close_app,"firefox"))
+_sbtn(sbi,"Close Paint",      lambda:qr(feat_close_app,"paint"))
+_sbtn(sbi,"Close Word",       lambda:qr(feat_close_app,"word"))
+_sbtn(sbi,"Close Excel",      lambda:qr(feat_close_app,"excel"))
+_sbtn(sbi,"Close PowerPoint", lambda:qr(feat_close_app,"powerpoint"))
 
-_section_label(sb_inner,"FUN")
-_side_btn(sb_inner,"Tell a Joke",lambda:qr(feat_joke))
-_side_btn(sb_inner,"Inspire Me", lambda:qr(feat_quote))
-_side_btn(sb_inner,"Flip a Coin",feat_coin)
-_side_btn(sb_inner,"Roll a Dice",lambda:feat_dice("6"))
+_sec(sbi,"SYSTEM INFO")
+_sbtn(sbi,"System Info", lambda:qr(feat_system_info))
+_sbtn(sbi,"Battery",     lambda:qr(feat_battery))
+_sbtn(sbi,"CPU Usage",   lambda:qr(feat_cpu))
+_sbtn(sbi,"RAM Usage",   lambda:qr(feat_ram))
+_sbtn(sbi,"Disk Usage",  lambda:qr(feat_disk))
+_sbtn(sbi,"Processes",   lambda:qr(feat_processes))
+_sbtn(sbi,"Network",     lambda:qr(feat_network))
+_sbtn(sbi,"Public IP",   lambda:qr(feat_public_ip))
+_sbtn(sbi,"Ping",        lambda:qr(feat_ping))
 
-_section_label(sb_inner,"ACTIONS")
-_side_btn(sb_inner,"List Files",      lambda:qr(feat_list_files))
-_side_btn(sb_inner,"Help / Commands", feat_help,C['violet'])
-_side_btn(sb_inner,"Clear Console",
-          lambda:(console.config(state=tk.NORMAL),console.delete('1.0',tk.END),console.config(state=tk.DISABLED)),C['bg3'])
+_sec(sbi,"POWER")
+_sbtn(sbi,"Lock Screen", lambda:qr(feat_lock),C["bg3"])
+_sbtn(sbi,"Sleep",       lambda:qr(feat_sleep),C["bg3"])
+_sbtn(sbi,"Restart",     feat_restart,C["bg3"])
+_sbtn(sbi,"Log Out",     lambda:qr(feat_logout),C["bg3"])
+_sbtn(sbi,"Shutdown",    feat_shutdown,C["bg3"])
 
-tk.Frame(body,bg=C['border'],width=1).pack(side=tk.LEFT,fill='y')
-right=tk.Frame(body,bg=C['bg0']); right.pack(side=tk.LEFT,fill='both',expand=True)
-con_hdr=tk.Frame(right,bg=C['bg1'],height=30); con_hdr.pack(fill='x'); con_hdr.pack_propagate(False)
-tk.Label(con_hdr,text="  PA CONSOLE",font=("Helvetica Neue",9,"bold"),fg=C['teal'],bg=C['bg1']).pack(side=tk.LEFT,padx=4,pady=5)
-tk.Label(con_hdr,text=f"{platform.system()} {platform.release()} · Python {platform.python_version()}  ",
-         font=("Helvetica Neue",8),fg=C['txt2'],bg=C['bg1']).pack(side=tk.RIGHT,pady=5)
-con_frame=tk.Frame(right,bg=C['bg0']); con_frame.pack(fill='both',expand=True)
-console=tk.Text(con_frame,font=FNT_MONO,bg=C['bg0'],fg=C['txt1'],insertbackground=C['gold'],
-                relief='flat',bd=0,wrap=tk.WORD,padx=16,pady=10,
-                selectbackground=C['gold'],selectforeground=C['bg0'],state=tk.DISABLED)
-console.pack(side=tk.LEFT,fill='both',expand=True)
-con_scroll=tk.Scrollbar(con_frame,orient='vertical',command=console.yview,bg=C['bg1'],troughcolor=C['bg0'])
-con_scroll.pack(side=tk.RIGHT,fill='y'); console.configure(yscrollcommand=con_scroll.set)
-for tag,fg in [("pa",C['teal']),("user",C['gold']),("heard",C['violet']),("info",C['txt2']),
-               ("warn",C['orange']),("err",C['coral']),("ok",C['mint']),("dim",C['bg4']),("normal",C['txt1'])]:
+_sec(sbi,"TOOLS")
+_sbtn(sbi,"Calculator",      _calc_prompt)
+_sbtn(sbi,"Screenshot",      lambda:qr(feat_screenshot))
+_sbtn(sbi,"Set Timer",       _timer_prompt)
+_sbtn(sbi,"Set Alarm",       _alarm_prompt)
+_sbtn(sbi,"Quick Note",      lambda:ROOT.after(0,feat_note))
+_sbtn(sbi,"Clipboard",       lambda:qr(feat_clipboard))
+_sbtn(sbi,"Clear Clipboard", lambda:qr(feat_clear_clipboard))
+_sbtn(sbi,"Vol Up",          lambda:qr(feat_volume,"up"))
+_sbtn(sbi,"Vol Down",        lambda:qr(feat_volume,"down"))
+_sbtn(sbi,"Mute",            lambda:qr(feat_volume,"mute"))
+_sbtn(sbi,"Unmute",          lambda:qr(feat_volume,"unmute"))
+
+_sec(sbi,"KNOWLEDGE")
+_sbtn(sbi,"Wikipedia",  _wiki_prompt)
+_sbtn(sbi,"Dictionary", _defn_prompt)
+_sbtn(sbi,"Weather",    lambda:qr(feat_weather))
+_sbtn(sbi,"News",       lambda:qr(feat_news))
+_sbtn(sbi,"Translate",  _trans_prompt)
+
+_sec(sbi,"FUN")
+_sbtn(sbi,"Tell a Joke", lambda:qr(feat_joke))
+_sbtn(sbi,"Inspire Me",  lambda:qr(feat_quote))
+_sbtn(sbi,"Flip a Coin", lambda:qr(feat_coin))
+_sbtn(sbi,"Roll a Dice", lambda:qr(feat_dice))
+
+_sec(sbi,"ACTIONS")
+_sbtn(sbi,"List Files",    lambda:qr(feat_list_files))
+_sbtn(sbi,"Help",          lambda:qr(feat_help),C["violet"])
+_sbtn(sbi,"Clear Console", lambda:(console.config(state=tk.NORMAL),
+                                    console.delete("1.0",tk.END),
+                                    console.config(state=tk.DISABLED)),C["bg3"])
+
+tk.Frame(body,bg=C["border"],width=1).pack(side=tk.LEFT,fill="y")
+right=tk.Frame(body,bg=C["bg0"]); right.pack(side=tk.LEFT,fill="both",expand=True)
+ch=tk.Frame(right,bg=C["bg1"],height=30); ch.pack(fill="x"); ch.pack_propagate(False)
+tk.Label(ch,text=f"  MAX CONSOLE — {USER_NAME}",font=("Helvetica Neue",9,"bold"),
+         fg=C["teal"],bg=C["bg1"]).pack(side=tk.LEFT,padx=4,pady=5)
+tk.Label(ch,text=f"{platform.system()} · Python {platform.python_version()}  ",
+         font=("Helvetica Neue",8),fg=C["txt2"],bg=C["bg1"]).pack(side=tk.RIGHT,pady=5)
+cf=tk.Frame(right,bg=C["bg0"]); cf.pack(fill="both",expand=True)
+console=tk.Text(cf,font=FNT_MONO,bg=C["bg0"],fg=C["txt1"],insertbackground=C["gold"],
+                relief="flat",bd=0,wrap=tk.WORD,padx=16,pady=10,
+                selectbackground=C["gold"],selectforeground=C["bg0"],state=tk.DISABLED)
+console.pack(side=tk.LEFT,fill="both",expand=True)
+cs=tk.Scrollbar(cf,orient="vertical",command=console.yview,bg=C["bg1"],troughcolor=C["bg0"])
+cs.pack(side=tk.RIGHT,fill="y"); console.configure(yscrollcommand=cs.set)
+for tag,fg in [("pa",C["teal"]),("user",C["gold"]),("heard",C["violet"]),("info",C["txt2"]),
+               ("warn",C["orange"]),("err",C["coral"]),("ok",C["mint"]),
+               ("dim",C["bg4"]),("normal",C["txt1"])]:
     console.tag_configure(tag,foreground=fg)
 
-ibar=tk.Frame(right,bg=C['bg1'],height=44); ibar.pack(fill='x',side='bottom'); ibar.pack_propagate(False)
-tk.Frame(right,bg=C['border'],height=1).pack(fill='x',side='bottom')
-tk.Label(ibar,text="  >",font=("Courier New",16,"bold"),fg=C['gold'],bg=C['bg1']).pack(side=tk.LEFT,padx=(8,2))
-PLACEHOLDER="Type a command and press Enter..."
-ivar=tk.StringVar()
-ientry=tk.Entry(ibar,textvariable=ivar,font=("Courier New",10),bg=C['bg2'],fg=C['txt0'],
-                insertbackground=C['gold'],relief='flat',bd=4,highlightthickness=1,
-                highlightcolor=C['teal'],highlightbackground=C['border'])
-ientry.pack(side=tk.LEFT,fill='both',expand=True,padx=4,pady=7)
-ientry.insert(0,PLACEHOLDER); ientry.config(fg=C['txt2'])
-ientry.bind('<FocusIn>',  lambda e:(ientry.delete(0,tk.END),ientry.config(fg=C['txt0'])) if ientry.get()==PLACEHOLDER else None)
-ientry.bind('<FocusOut>', lambda e:(ientry.insert(0,PLACEHOLDER),ientry.config(fg=C['txt2'])) if not ientry.get() else None)
-def _submit(e=None):
-    cmd=ivar.get().strip()
-    if cmd and cmd!=PLACEHOLDER:
-        ientry.delete(0,tk.END); user_echo(cmd)
-        threading.Thread(target=dispatch,args=(cmd.lower(),),daemon=True).start()
-ientry.bind('<Return>',_submit)
-_mk_btn(ibar,"Send",_submit,C['gold'],C['bg0'],w=9).pack(side=tk.RIGHT,padx=8,pady=7)
+ib=tk.Frame(right,bg=C["bg1"],height=44); ib.pack(fill="x",side="bottom"); ib.pack_propagate(False)
+tk.Frame(right,bg=C["border"],height=1).pack(fill="x",side="bottom")
+tk.Label(ib,text="  >",font=("Courier New",16,"bold"),fg=C["gold"],bg=C["bg1"]).pack(side=tk.LEFT,padx=(8,2))
+PH="Type a command and press Enter…"
+iv=tk.StringVar()
+ie=tk.Entry(ib,textvariable=iv,font=("Courier New",10),bg=C["bg2"],fg=C["txt0"],
+            insertbackground=C["gold"],relief="flat",bd=4,highlightthickness=1,
+            highlightcolor=C["teal"],highlightbackground=C["border"])
+ie.pack(side=tk.LEFT,fill="both",expand=True,padx=4,pady=7)
+ie.insert(0,PH); ie.config(fg=C["txt2"])
+ie.bind("<FocusIn>", lambda e:(ie.delete(0,tk.END),ie.config(fg=C["txt0"])) if ie.get()==PH else None)
+ie.bind("<FocusOut>",lambda e:(ie.insert(0,PH),ie.config(fg=C["txt2"])) if not ie.get() else None)
+def _sub(e=None):
+    c=iv.get().strip()
+    if c and c!=PH:
+        ie.delete(0,tk.END); user_echo(c)
+        threading.Thread(target=dispatch,args=(c.lower(),),daemon=True).start()
+ie.bind("<Return>",_sub)
+_mk_btn(ib,"Send",_sub,C["gold"],C["bg0"],9).pack(side=tk.RIGHT,padx=8,pady=7)
 
-# ── BOOT MESSAGE ──────────────────────────────────────────────────────────────
-def _boot_msg():
-    _console_write("╔══════════════════════════════════════════════════╗\n","ok")
-    _console_write("║      PA — Personal Assistant  v2.3               ║\n","ok")
-    _console_write("║      Wake: pvporcupine (offline) + Google fallback║\n","ok")
-    _console_write("╚══════════════════════════════════════════════════╝\n\n","ok")
-    _console_write(f"  Platform : {platform.system()} {platform.release()}\n","info")
-    _console_write(f"  Python   : {platform.python_version()}\n\n","info")
-    for label,ok,fix in [
-        ("SR",           SR_AVAILABLE,           "pip install SpeechRecognition"),
-        ("sounddevice",  SOUNDDEVICE_AVAILABLE,   "pip install sounddevice numpy"),
-        ("pvporcupine",  PORCUPINE_AVAILABLE,     "pip install pvporcupine  (optional offline wake word)"),
-        ("TTS",          TTS_AVAILABLE,           "pip install pyttsx3"),
-        ("psutil",       PSUTIL_AVAILABLE,        "pip install psutil"),
-        ("wikipedia",    WIKI_AVAILABLE,          "pip install wikipedia"),
-        ("pyautogui",    PYAUTOGUI_AVAILABLE,     "pip install pyautogui"),
-        ("requests",     REQUESTS_AVAILABLE,      "pip install requests"),
+def _boot():
+    _cwrite("╔══════════════════════════════════════════════════╗\n","ok")
+    _cwrite(f"║   Max v{VERSION} — {USER_NAME}'s Personal Assistant     ║\n","ok")
+    _cwrite("╚══════════════════════════════════════════════════╝\n\n","ok")
+    _cwrite(f"  Platform : {platform.system()} {platform.release()}\n","info")
+    _cwrite(f"  Python   : {platform.python_version()}\n\n","info")
+    for lbl,ok,fix in [
+        ("SpeechRecognition",  SR_AVAILABLE,          "pip install SpeechRecognition"),
+        ("sounddevice+numpy",  SOUNDDEVICE_AVAILABLE, "pip install sounddevice numpy"),
+        ("pyttsx3 (TTS)",      TTS_AVAILABLE,          "pip install pyttsx3"),
+        ("psutil",             PSUTIL_AVAILABLE,       "pip install psutil"),
+        ("wikipedia",          WIKI_AVAILABLE,         "pip install wikipedia"),
+        ("pyautogui",          PYAUTOGUI_AVAILABLE,    "pip install pyautogui"),
+        ("pygetwindow",        PYGETWINDOW_AVAILABLE,  "pip install pygetwindow"),
+        ("requests",           REQUESTS_AVAILABLE,     "pip install requests"),
     ]:
-        _console_write(f"  {label:<16}: {'Ready' if ok else ('optional — '+fix if 'optional' in fix else 'MISSING — '+fix)}\n",
-                       "ok" if ok else ("info" if "optional" in fix else "warn"))
-    if not SOUNDDEVICE_AVAILABLE:
-        _console_write("\n  VOICE DISABLED — run: pip install sounddevice numpy\n","err")
-    elif PORCUPINE_AVAILABLE:
-        _console_write('\n  Say "porcupine" → PA says "Hello Rushindhra!" → speak your command\n',"normal")
-        _console_write('  (For custom "hey pa" keyword: https://console.picovoice.ai)\n',"info")
-    else:
-        _console_write('\n  Say "hey pa" or "wake" → PA says "Hello Rushindhra!" → speak\n',"normal")
-    _console_write("  Or type in the bar below and press Enter\n","normal")
-    _console_write("  Click Help / Commands to see all commands\n\n","normal")
+        _cwrite(f"  {lbl:<22}: {'OK' if ok else 'MISSING — '+fix}\n","ok" if ok else "warn")
+    _cwrite(f'\n  Say "{WAKE_WORD}" → Max says "Yes {USER_NAME}?"\n',"normal")
+    _cwrite("  Fuzzy corrections active — mishearings auto-fixed.\n","info")
+    _cwrite("  [corrected] lines show what was fixed in dim text.\n","info")
+    _cwrite("  Or type in the bar below and press Enter.\n\n","normal")
 
-_boot_msg()
-set_status("Ready", C['mint'])
-ROOT.after(40, flush_gui)
+_boot()
+set_status(f"Ready {USER_NAME} — click Start Max", C["mint"])
+ROOT.after(40, _flush_gui)
+ROOT.protocol("WM_DELETE_WINDOW", ROOT.destroy)
 ROOT.mainloop()
 _tts_q.put(None)
