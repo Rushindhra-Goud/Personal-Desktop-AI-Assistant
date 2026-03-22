@@ -6,12 +6,28 @@ Fixes     : fuzzy corrections for ALL commands, single tab close, no double trig
 INSTALL:
     pip install SpeechRecognition sounddevice numpy pyttsx3 psutil
     pip install requests wikipedia pyjokes pyautogui pygetwindow
+    pip install python-dotenv
+
+API KEYS SETUP:
+    Create a file named  .env  in the same folder as this script:
+    ─────────────────────────────────
+    OPENWEATHER_API_KEY=your_key_here
+    NEWS_API_KEY=your_key_here
+    ─────────────────────────────────
+    Then add  .env  to your  .gitignore  so it is never uploaded to GitHub.
 """
 
 import datetime, webbrowser, os, threading, time, re, socket
 import queue, platform, subprocess, random, math
 import tkinter as tk
 import tkinter.messagebox as msgbox
+
+# ── load .env file if present (python-dotenv) ─────────────────────────────────
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass   # dotenv not installed — os.environ.get() still works for system env vars
 
 try:    import speech_recognition as sr;  SR_AVAILABLE = True
 except: SR_AVAILABLE = False;             sr = None
@@ -75,191 +91,116 @@ C = {
 FNT_BTN  = ("Helvetica Neue", 9, "bold")
 FNT_MONO = ("Courier New", 10)
 
-# ─────────────────────────────────────────────────────────────────────────────
-# FUZZY CORRECTIONS — every command Google Speech might mishear
-# Format:  "what google hears" : "correct keyword"
-# Add new ones anytime you see a failed Heard: line in the console
-# ─────────────────────────────────────────────────────────────────────────────
 FUZZY_CORRECTIONS = {
-
-    # ── SITES ────────────────────────────────────────────────────────────────
-    # chatgpt
     "charging ppt":"chatgpt","charge ppt":"chatgpt","chat gpt":"chatgpt",
     "charging pt":"chatgpt","chargingppt":"chatgpt","charging bt":"chatgpt",
     "chat gt":"chatgpt","charge gt":"chatgpt","charging gpt":"chatgpt",
     "sharjah ppt":"chatgpt","chart ppt":"chatgpt","sharp pt":"chatgpt",
     "charging pp":"chatgpt","charting ppt":"chatgpt","chat dpt":"chatgpt",
-    # gemini
     "jemini":"gemini","jimini":"gemini","jimmy":"gemini","jamini":"gemini",
     "germini":"gemini","jimmie":"gemini","jemmy":"gemini","gimini":"gemini",
     "ge mini":"gemini","jay mini":"gemini",
-    # youtube
     "you tube":"youtube","utube":"youtube","u tube":"youtube","you to":"youtube",
     "you too":"youtube","youth":"youtube","eu tube":"youtube",
-    # whatsapp
     "what's app":"whatsapp","what sapp":"whatsapp","watsapp":"whatsapp",
     "whats up":"whatsapp","what sup":"whatsapp","what's up":"whatsapp",
     "what's ab":"whatsapp","what app":"whatsapp",
-    # instagram
     "insta gram":"instagram","insta":"instagram","instant gram":"instagram",
     "instagram ram":"instagram","in stagram":"instagram",
-    # linkedin
     "linked in":"linkedin","lincoln":"linkedin","linked inn":"linkedin",
     "link din":"linkedin","link dein":"linkedin","linkin":"linkedin",
-    # github
     "git hub":"github","give hub":"github","git up":"github",
-    "git hub":"github","get hub":"github","give up":"github",
-    # stackoverflow
+    "get hub":"github","give up":"github",
     "stack overflow":"stackoverflow","stack over flow":"stackoverflow",
     "stack overflows":"stackoverflow",
-    # discord
     "disk cord":"discord","this cord":"discord","disc cord":"discord",
     "dis cord":"discord","this court":"discord",
-    # spotify
     "spot if i":"spotify","spot ify":"spotify","spot a fly":"spotify",
     "spot fire":"spotify","spot ifi":"spotify",
-    # notion
     "no shun":"notion","no tion":"notion","ocean":"notion","noshun":"notion",
-    # netflix
     "net flix":"netflix","net flex":"netflix","net flicks":"netflix",
-    # google maps
     "google map":"maps","google maps":"maps","g maps":"maps",
-    # google drive
     "google drive":"drive","g drive":"drive",
-    # google meet
     "google meet":"meet","g meet":"meet",
-    # google docs
     "google docs":"docs","g docs":"docs",
-    # google sheets
     "google sheets":"sheets","g sheets":"sheets",
-    # amazon
     "amaz on":"amazon","amazone":"amazon",
-    # reddit
     "red it":"reddit","red dit":"reddit",
-    # twitter
     "twit er":"twitter","twitt er":"twitter",
-
-    # ── APPS ─────────────────────────────────────────────────────────────────
-    # vs code
     "be s code":"vscode","vs cold":"vscode","the s code":"vscode",
     "vs co":"vscode","visual studio code":"vscode","visual studio":"vscode",
     "be escort":"vscode","visa code":"vscode","vs court":"vscode",
     "bs code":"vscode","v s code":"vscode",
-    # powerpoint
     "power point":"powerpoint","power pnt":"powerpoint","power pint":"powerpoint",
     "power points":"powerpoint","ppt":"powerpoint",
-    # notepad
     "note pad":"notepad","notes pad":"notepad","noted":"notepad",
     "note path":"notepad","not pad":"notepad",
-    # calculator
     "calculate or":"calculator","calculated":"calculator",
     "calculation":"calculator","calculater":"calculator",
-    # task manager
     "task manage":"task manager","tasks manager":"task manager",
     "task manger":"task manager",
-    # file explorer
     "file explorer":"explorer","files explorer":"explorer",
     "file manager":"explorer",
-    # firefox
     "fire fox":"firefox","fire fo":"firefox",
-    # edge
     "microsoft edge":"edge","ms edge":"edge",
-    # paint
     "ms paint":"paint","microsoft paint":"paint",
-    # word
     "microsoft word":"word","ms word":"word",
-    # excel
     "microsoft excel":"excel","ms excel":"excel",
-    # chrome
     "google chrome":"chrome","g chrome":"chrome",
-
-    # ── TIME / DATE ───────────────────────────────────────────────────────────
     "what's the time":"what time","what is the time":"what time",
     "current time":"what time","tell me the time":"what time",
     "what's the date":"what date","what is the date":"what date",
     "current date":"what date","tell me the date":"what date",
     "todays date":"what date","today's date":"what date",
     "date and time":"date and time","time and date":"date and time",
-
-    # ── SEARCH ───────────────────────────────────────────────────────────────
     "google search":"search","search for":"search","look up":"search",
     "can you search":"search","please search":"search",
     "youtube search":"youtube search","search youtube":"youtube search",
     "play on youtube":"youtube search","find on youtube":"youtube search",
-
-    # ── CALCULATE ────────────────────────────────────────────────────────────
     "calculation":"calculate","solve this":"calculate","compute":"calculate",
     "what is the answer":"calculate","math":"calculate",
     "what's 2 plus 2":"calculate 2 plus 2",
-
-    # ── SCREENSHOT ───────────────────────────────────────────────────────────
     "screen shot":"screenshot","screen short":"screenshot",
     "take screen":"screenshot","capture screen":"screenshot",
     "screen capture":"screenshot","print screen":"screenshot",
-
-    # ── SYSTEM INFO ──────────────────────────────────────────────────────────
     "system and for":"system info","system information":"system info",
     "system details":"system info","show system":"system info",
-    # cpu
     "cp you":"cpu","see p you":"cpu","cpu usage":"cpu",
     "processor":"cpu","processor usage":"cpu",
-    # ram
     "ram usage":"ram","memory usage":"ram","ram memory":"ram",
-    # disk
     "disk space":"disk","disk usage":"disk","hard disk":"disk",
     "storage":"disk","hard drive":"disk",
-    # battery
     "battery level":"battery","battery status":"battery","batteries":"battery",
     "battery percentage":"battery","how much battery":"battery",
-    # processes
     "running processes":"processes","top processes":"processes",
     "active processes":"processes","process list":"processes",
-
-    # ── NETWORK ──────────────────────────────────────────────────────────────
     "network information":"network info","network status":"network info",
     "local ip":"network info","hostname":"network info",
     "my ip address":"my ip","what is my ip":"my ip","ip address":"my ip",
     "public ip address":"my ip","external ip":"my ip",
     "ping test":"ping","test ping":"ping","test connection":"ping",
     "check internet":"ping","internet speed":"ping",
-
-    # ── POWER ────────────────────────────────────────────────────────────────
-    # lock
     "lock the screen":"lock screen","lock my screen":"lock screen",
     "screen lock":"lock screen","lock the computer":"lock screen",
-    # sleep
     "go to sleep":"sleep","put to sleep":"sleep","hibernate":"sleep",
     "suspend":"sleep",
-    # shutdown
     "shut down":"shutdown","turn off":"shutdown","power off":"shutdown",
     "switch off":"shutdown","shut it down":"shutdown",
-    # restart
     "re start":"restart","re boot":"restart","start again":"restart",
-    # logout
     "log out":"logout","sign out":"logout","log me out":"logout",
     "switch user":"logout",
-
-    # ── WIKIPEDIA ────────────────────────────────────────────────────────────
     "wiki pedia":"wikipedia","wikki":"wikipedia","wickipedia":"wikipedia",
     "wiki search":"wikipedia","search wikipedia":"wikipedia",
     "tell me about":"wikipedia","what is":"wikipedia","who is":"wikipedia",
-
-    # ── DICTIONARY ───────────────────────────────────────────────────────────
     "definition of":"define","meaning of":"define","what does":"define",
     "dictionary":"define","look up word":"define","define the word":"define",
-
-    # ── WEATHER ──────────────────────────────────────────────────────────────
     "weather today":"weather","today's weather":"weather",
     "temperature outside":"weather","what's the weather":"weather",
     "how's the weather":"weather","weather forecast":"weather",
     "weather report":"weather",
-
-    # ── NEWS ─────────────────────────────────────────────────────────────────
     "latest news":"news","today's news":"news","news update":"news",
     "what's in the news":"news","current news":"news","top headlines":"news",
     "news headlines":"news",
-
-    # ── VOLUME ───────────────────────────────────────────────────────────────
     "volume up":"volume up","turn up volume":"volume up",
     "increase volume":"volume up","louder":"volume up",
     "volume down":"volume down","turn down volume":"volume down",
@@ -267,53 +208,33 @@ FUZZY_CORRECTIONS = {
     "mute the sound":"mute","turn off sound":"mute","silence":"mute",
     "unmute the sound":"unmute","turn on sound":"unmute",
     "what is the volume":"volume","current volume":"volume",
-
-    # ── TIMER ────────────────────────────────────────────────────────────────
     "set a timer":"set timer","start a timer":"set timer",
     "start timer":"set timer","create timer":"set timer",
     "countdown":"set timer","timer for":"set timer",
-
-    # ── ALARM ────────────────────────────────────────────────────────────────
     "set an alarm":"set alarm","start an alarm":"set alarm",
     "create alarm":"set alarm","alarm for":"set alarm",
     "wake me up":"set alarm","wake me at":"set alarm",
-
-    # ── NOTE ─────────────────────────────────────────────────────────────────
     "create a note":"create note","take a note":"create note",
     "new note":"create note","open note":"create note",
     "make a note":"create note","write a note":"create note",
     "quick note":"create note","note down":"create note",
-
-    # ── CLIPBOARD ────────────────────────────────────────────────────────────
     "what's in clipboard":"clipboard","show clipboard":"clipboard",
     "read clipboard":"clipboard","paste content":"clipboard",
     "clear the clipboard":"clear clipboard","empty clipboard":"clear clipboard",
-
-    # ── FUN ──────────────────────────────────────────────────────────────────
-    # joke
     "tell a joke":"joke","say a joke":"joke","give me a joke":"joke",
     "make me laugh":"joke","funny joke":"joke","crack a joke":"joke",
-    # quote
     "give me a quote":"quote","motivate me":"quote","inspire me":"quote",
     "motivation":"quote","inspiration":"quote","inspirational quote":"quote",
-    # coin
     "flip a coin":"flip coin","toss a coin":"flip coin",
     "heads or tails":"flip coin","coin toss":"flip coin",
-    # dice
     "roll a dice":"roll dice","roll a die":"roll dice","roll the dice":"roll dice",
     "random number":"roll dice","pick a number":"roll dice",
-
-    # ── TRANSLATE ────────────────────────────────────────────────────────────
     "translation":"translate","translator":"translate",
     "translate this":"translate","convert language":"translate",
     "language translate":"translate",
-
-    # ── FILES ────────────────────────────────────────────────────────────────
     "show files":"list files","show all files":"list files",
     "what files":"list files","display files":"list files",
     "files here":"list files","current files":"list files",
-
-    # ── CHAT ─────────────────────────────────────────────────────────────────
     "hey there":"hello","hi there":"hello","hello max":"hello",
     "how are you doing":"how are you","how do you do":"how are you",
     "are you okay":"how are you","how is it going":"how are you",
@@ -325,36 +246,24 @@ FUZZY_CORRECTIONS = {
     "list commands":"help","available commands":"help",
     "bye max":"goodbye","goodbye max":"goodbye","see you":"goodbye",
     "see you later":"goodbye","exit":"goodbye","quit":"goodbye",
-
-# ── HELP ─────────────────────────────────────────────────────────────────────
-"halp":"help","helf":"help","hep":"help","kelp":"help","hepl":"help",
-"hulp":"help","hilp":"help","holp":"help","hel":"help","heip":"help",
-"hlp":"help","hlep":"help","hlp":"help","h e l p":"help",
-"help me":"help","show help":"help","show commands":"help",
-"list commands":"help","available commands":"help",
-"what can you do":"help","what do you do":"help",
-"what commands":"help","all commands":"help","give me help":"help",
-"i need help":"help","can you help":"help","please help":"help",
-"tell me commands":"help","show me commands":"help",
-"what are your commands":"help","how to use":"help",
-"instructions":"help","guide":"help","manual":"help",
-"features":"help","capabilities":"help",
-"what can max do":"help","max commands":"help","max help":"help",
-"commands list":"help","helper":"help","helping":"help","helps":"help",
-
-    # ── CLOSE ────────────────────────────────────────────────────────────────
+    "halp":"help","helf":"help","hep":"help","kelp":"help","hepl":"help",
+    "hulp":"help","hilp":"help","holp":"help","hel":"help","heip":"help",
+    "hlp":"help","hlep":"help","h e l p":"help",
+    "help me":"help","what can you do":"help","what do you do":"help",
+    "what commands":"help","all commands":"help","give me help":"help",
+    "i need help":"help","can you help":"help","please help":"help",
+    "tell me commands":"help","show me commands":"help",
+    "what are your commands":"help","how to use":"help",
+    "instructions":"help","guide":"help","manual":"help",
+    "features":"help","capabilities":"help",
+    "what can max do":"help","max commands":"help","max help":"help",
+    "commands list":"help","helper":"help","helping":"help","helps":"help",
     "close the tab":"close","shut the tab":"close","kill the tab":"close",
     "close this tab":"close","close tab":"close",
 }
 
 def _fuzzy_correct(text):
-    """
-    Auto-correct Google Speech mishearings before dispatching.
-    Shows dim correction line in console so you know what was fixed.
-    If nothing matches, returns original text unchanged.
-    """
     t = text.lower().strip()
-    # sort by length descending so longer phrases match before shorter ones
     for wrong in sorted(FUZZY_CORRECTIONS.keys(), key=len, reverse=True):
         if wrong in t:
             correct = FUZZY_CORRECTIONS[wrong]
@@ -409,6 +318,11 @@ def speak(text):
     ts = datetime.datetime.now().strftime("%H:%M:%S")
     _gui(_cwrite, f"[{ts}] MAX: {text}\n", "pa")
     _tts_q.put(text)
+
+def speak_and_wait(text):
+    """Speak text and block until TTS fully finishes."""
+    speak(text)
+    _tts_q.join()
 
 def user_echo(text):
     ts = datetime.datetime.now().strftime("%H:%M:%S")
@@ -869,28 +783,50 @@ def feat_define(word):
         else: speak(f"{USER_NAME}, no definition found for {word}.")
     except: speak(f"{USER_NAME}, dictionary unavailable.")
 
-def feat_weather(city="Hyderabad"):
-    key = os.environ.get("OPENWEATHER_API_KEY","")
-    if not key: speak(f"{USER_NAME}, set OPENWEATHER_API_KEY in environment variables."); return
+# ── FIXED: API keys now loaded from .env file — no hardcoded secrets ──────────
+def feat_weather(city="Warangal"):
+    key = os.environ.get("OPENWEATHER_API_KEY")   # reads from .env via load_dotenv()
+    if not key:
+        speak(f"{USER_NAME}, weather API key missing. Add OPENWEATHER_API_KEY to your .env file.")
+        return
+    if not REQUESTS_AVAILABLE: speak(f"{USER_NAME}, requests not installed."); return
     speak(f"{USER_NAME}, checking weather in {city}.")
     try:
-        d = requests.get(f"https://api.openweathermap.org/data/2.5/weather?q={city}&appid={key}&units=metric",timeout=6).json()
+        d = requests.get(
+            f"https://api.openweathermap.org/data/2.5/weather?q={city}&appid={key}&units=metric",
+            timeout=6
+        ).json()
         if d.get("cod") != 404:
             speak(f"{USER_NAME}, {city}: {d['main']['temp']:.1f} degrees, {d['weather'][0]['description']}, humidity {d['main']['humidity']}%.")
-        else: speak(f"{USER_NAME}, city {city} not found.")
-    except: speak(f"{USER_NAME}, weather unavailable.")
+        else:
+            speak(f"{USER_NAME}, city {city} not found.")
+    except:
+        speak(f"{USER_NAME}, weather unavailable.")
 
 def feat_news():
-    key = os.environ.get("NEWS_API_KEY","")
-    if not key: speak(f"{USER_NAME}, set NEWS_API_KEY in environment variables."); return
+    key = os.environ.get("NEWS_API_KEY")           # reads from .env via load_dotenv()
+    if not key:
+        speak(f"{USER_NAME}, news API key missing. Add NEWS_API_KEY to your .env file.")
+        return
+    if not REQUESTS_AVAILABLE: speak(f"{USER_NAME}, requests not installed."); return
     speak(f"{USER_NAME}, fetching headlines.")
     try:
-        d = requests.get(f"https://newsapi.org/v2/top-headlines?country=in&apiKey={key}",timeout=6).json()
-        if d.get("status")=="ok":
-            for i,a in enumerate(d.get("articles",[])[:3],1):
-                speak(f"Headline {i}: {a.get('title','')}")
-        else: speak(f"{USER_NAME}, could not fetch news.")
-    except: speak(f"{USER_NAME}, news unavailable.")
+        d = requests.get(
+            f"https://newsapi.org/v2/top-headlines?language=en&apiKey={key}",
+            timeout=6
+        ).json()
+        if d.get("status") == "ok":
+            articles = d.get("articles", [])
+            if articles:
+                for i, a in enumerate(articles[:3], 1):
+                    speak(f"Headline {i}: {a.get('title', '')}")
+            else:
+                speak(f"{USER_NAME}, no headlines found.")
+        else:
+            speak(f"{USER_NAME}, could not fetch news. {d.get('message', '')}")
+    except Exception:
+        speak(f"{USER_NAME}, news unavailable.")
+# ─────────────────────────────────────────────────────────────────────────────
 
 def feat_joke():
     if JOKES_AVAILABLE:
@@ -1028,8 +964,8 @@ TIMER       : set timer 5 minutes
 ALARM       : set alarm 7 30 am
 NOTE        : create note
 CLIPBOARD   : clipboard / clear clipboard
-WEATHER     : weather (needs API key)
-NEWS        : news (needs API key)
+WEATHER     : weather (needs OPENWEATHER_API_KEY in .env)
+NEWS        : news (needs NEWS_API_KEY in .env)
 JOKE        : tell me a joke
 QUOTE       : inspire me
 COIN/DICE   : flip a coin / roll a dice
@@ -1047,12 +983,10 @@ def feat_greet():
 
 # ── dispatch ──────────────────────────────────────────────────────────────────
 def dispatch(cmd):
-    # ── auto-correct mishearings FIRST ──────────────────────────────────────
     c = _fuzzy_correct(cmd.lower().strip())
     set_status("Processing…", C["violet"])
     T = threading.Thread
 
-    # ── CLOSE ────────────────────────────────────────────────────────────────
     close_match = re.match(r"(close|stop|shut|kill|exit)\s+(.+)", c)
     if close_match:
         target = close_match.group(2).strip()
@@ -1066,11 +1000,9 @@ def dispatch(cmd):
                 T(target=feat_close_app, args=(key,), daemon=True).start(); return
         speak(f"{USER_NAME}, I could not find what to close."); return
 
-    # ── CLEAR CLIPBOARD ──────────────────────────────────────────────────────
     if re.search(r"clear\s+clipboard", c):
         T(target=feat_clear_clipboard, daemon=True).start(); return
 
-    # ── TIME / DATE ──────────────────────────────────────────────────────────
     if re.search(r"date\s+and\s+time|time\s+and\s+date", c):
         T(target=feat_datetime, daemon=True).start(); return
     if re.search(r"what\s+time|current\s+time|tell.*time|time\b", c) and "timer" not in c:
@@ -1078,7 +1010,6 @@ def dispatch(cmd):
     if re.search(r"what.*date|today.*date|current\s+date|what\s+date", c):
         T(target=feat_date, daemon=True).start(); return
 
-    # ── OPEN ─────────────────────────────────────────────────────────────────
     if re.search(r"\b(open|launch|start|go\s+to|load|show)\b", c):
         if "chrome" in c:
             T(target=feat_open_chrome, daemon=True).start(); return
@@ -1089,17 +1020,14 @@ def dispatch(cmd):
         for key in amap:
             if key in c:
                 T(target=feat_open_app, args=(key,), daemon=True).start(); return
-        speak(f"{USER_NAME}, I could not find what to open. Check the corrected line in the console.")
-        return
+        speak(f"{USER_NAME}, I could not find what to open."); return
 
-    # ── YOUTUBE SEARCH ───────────────────────────────────────────────────────
     if re.search(r"\byoutube\b", c):
         query = re.sub(r"\b(youtube|play|search|find|watch)\b","",c,flags=re.I).strip()
         if query: T(target=feat_youtube_search, args=(query,), daemon=True).start()
         else:     T(target=feat_open_site, args=("youtube",), daemon=True).start()
         return
 
-    # ── GOOGLE SEARCH ────────────────────────────────────────────────────────
     if re.search(r"\b(search|google|look\s+up|find)\b", c):
         query = re.sub(r"\b(search|google|look\s+up|find)\b","",c,flags=re.I).strip()
         if query: T(target=feat_google_search, args=(query,), daemon=True).start()
@@ -1108,16 +1036,13 @@ def dispatch(cmd):
             if q: T(target=feat_google_search, args=(q,), daemon=True).start()
         return
 
-    # ── CALCULATE ────────────────────────────────────────────────────────────
     if re.search(r"\b(calculate|compute|evaluate|solve|math)\b", c):
         expr = re.sub(r"\b(calculate|compute|evaluate|solve|math)\b","",c,flags=re.I).strip()
         T(target=feat_calculate, args=(expr,), daemon=True).start(); return
 
-    # ── SCREENSHOT ───────────────────────────────────────────────────────────
     if re.search(r"\bscreenshot\b", c):
         T(target=feat_screenshot, daemon=True).start(); return
 
-    # ── SYSTEM ───────────────────────────────────────────────────────────────
     if re.search(r"\bsystem\s+info\b", c):
         T(target=feat_system_info, daemon=True).start(); return
     if re.search(r"\bbattery\b", c):
@@ -1131,7 +1056,6 @@ def dispatch(cmd):
     if re.search(r"\bprocess", c):
         T(target=feat_processes, daemon=True).start(); return
 
-    # ── NETWORK ──────────────────────────────────────────────────────────────
     if re.search(r"\bnetwork\s+info\b", c):
         T(target=feat_network, daemon=True).start(); return
     if re.search(r"\b(public\s+ip|my\s+ip|ip\s+address)\b", c):
@@ -1139,7 +1063,6 @@ def dispatch(cmd):
     if re.search(r"\bping\b", c):
         T(target=feat_ping, daemon=True).start(); return
 
-    # ── POWER ────────────────────────────────────────────────────────────────
     if re.search(r"\block\s+screen\b", c):
         T(target=feat_lock, daemon=True).start(); return
     if re.search(r"\b(sleep|hibernate|suspend)\b", c):
@@ -1151,7 +1074,6 @@ def dispatch(cmd):
     if re.search(r"\b(log\s*out|sign\s*out)\b", c):
         T(target=feat_logout, daemon=True).start(); return
 
-    # ── KNOWLEDGE ────────────────────────────────────────────────────────────
     if re.search(r"\b(wikipedia|wiki)\b", c):
         query = re.sub(r"\b(wikipedia|wiki|tell\s+me\s+about|who\s+is|what\s+is)\b","",c,flags=re.I).strip()
         T(target=feat_wikipedia, args=(query,), daemon=True).start(); return
@@ -1159,13 +1081,12 @@ def dispatch(cmd):
         word = re.sub(r"\b(define|definition|meaning|dictionary)\b","",c,flags=re.I).strip()
         T(target=feat_define, args=(word,), daemon=True).start(); return
     if re.search(r"\b(weather|temperature|forecast)\b", c):
-        m = re.search(r"\bin\s+([A-Za-z ]+)$",c)
-        city = m.group(1).strip() if m else "Hyderabad"
+        m = re.search(r"\bin\s+([A-Za-z ]+)$", c)
+        city = m.group(1).strip() if m else "Warangal"
         T(target=feat_weather, args=(city,), daemon=True).start(); return
     if re.search(r"\b(news|headlines)\b", c):
         T(target=feat_news, daemon=True).start(); return
 
-    # ── VOLUME ───────────────────────────────────────────────────────────────
     if re.search(r"\bvolume\b", c):
         if re.search(r"\b(up|louder|increase)\b",c):      T(target=feat_volume,args=("up",),daemon=True).start()
         elif re.search(r"\b(down|quieter|decrease)\b",c): T(target=feat_volume,args=("down",),daemon=True).start()
@@ -1174,7 +1095,6 @@ def dispatch(cmd):
         else:                                              T(target=feat_volume,args=("status",),daemon=True).start()
         return
 
-    # ── TIMER ────────────────────────────────────────────────────────────────
     if re.search(r"\b(set\s+timer|timer\s+for|countdown|start\s+timer)\b", c):
         m = re.search(r"(\d+)\s*(hour|hours|minute|minutes|second|seconds)",c)
         if m: T(target=feat_timer,args=(int(m.group(1)),m.group(2)),daemon=True).start()
@@ -1185,7 +1105,6 @@ def dispatch(cmd):
                 if m2: T(target=feat_timer,args=(int(m2.group(1)),m2.group(2)),daemon=True).start()
         return
 
-    # ── ALARM ────────────────────────────────────────────────────────────────
     if re.search(r"\b(set\s+alarm|alarm\s+for|wake\s+me)\b", c):
         m = re.search(r"(\d{1,2})[:\s]?(\d{2})?\s*(am|pm)?",c,re.I)
         if m:
@@ -1204,15 +1123,12 @@ def dispatch(cmd):
                     T(target=feat_alarm,args=(h,mn),daemon=True).start()
         return
 
-    # ── NOTE ─────────────────────────────────────────────────────────────────
     if re.search(r"\b(create\s+note|new\s+note|take\s+note|open\s+note|quick\s+note|note\s+down)\b", c):
         ROOT.after(0, feat_note); return
 
-    # ── CLIPBOARD ────────────────────────────────────────────────────────────
     if re.search(r"\bclipboard\b", c):
         T(target=feat_clipboard, daemon=True).start(); return
 
-    # ── FUN ──────────────────────────────────────────────────────────────────
     if re.search(r"\bjoke\b", c):
         T(target=feat_joke, daemon=True).start(); return
     if re.search(r"\b(quote|inspire|motivate|motivation|inspiration)\b", c):
@@ -1228,7 +1144,6 @@ def dispatch(cmd):
     if re.search(r"\blist\s+files\b", c):
         T(target=feat_list_files, daemon=True).start(); return
 
-    # ── CHAT ─────────────────────────────────────────────────────────────────
     if re.search(r"\b(hello|hi\s+max|hey\s+there|hi\s+there)\b", c):
         T(target=lambda:speak(f"Hello {USER_NAME}! How can I help you?"),daemon=True).start(); return
     if re.search(r"\bhow\s+are\s+you\b", c):
@@ -1245,7 +1160,6 @@ def dispatch(cmd):
             time.sleep(3); ROOT.after(0, ROOT.quit)
         T(target=_bye, daemon=True).start(); return
 
-    # ── unknown ──────────────────────────────────────────────────────────────
     T(target=lambda:speak(f"{USER_NAME}, I heard '{cmd}' but did not understand. Say help to see all commands."),daemon=True).start()
     set_status(f"Say '{WAKE_WORD}'…", C["txt2"])
 
@@ -1313,7 +1227,9 @@ def _main_loop():
         command = capture_voice(duration=7)
         if not _running: break
         if command and command != "NO_MIC":
-            user_echo(command); dispatch(command)
+            user_echo(command)
+            speak_and_wait(f"{USER_NAME}, you said: {command}")
+            dispatch(command)
         elif command == "NO_MIC":
             speak(f"{USER_NAME}, microphone unavailable.")
     set_wake_led("idle")
@@ -1628,8 +1544,14 @@ def _boot():
         ("pyautogui",          PYAUTOGUI_AVAILABLE,    "pip install pyautogui"),
         ("pygetwindow",        PYGETWINDOW_AVAILABLE,  "pip install pygetwindow"),
         ("requests",           REQUESTS_AVAILABLE,     "pip install requests"),
+        ("python-dotenv",      True,                   "pip install python-dotenv"),
     ]:
         _cwrite(f"  {lbl:<22}: {'OK' if ok else 'MISSING — '+fix}\n","ok" if ok else "warn")
+    # Warn if API keys are missing
+    if not os.environ.get("OPENWEATHER_API_KEY"):
+        _cwrite("  ! OPENWEATHER_API_KEY not set — add to .env for weather\n","warn")
+    if not os.environ.get("NEWS_API_KEY"):
+        _cwrite("  ! NEWS_API_KEY not set — add to .env for news\n","warn")
     _cwrite(f'\n  Say "{WAKE_WORD}" → Max says "Yes {USER_NAME}?"\n',"normal")
     _cwrite("  Fuzzy corrections active — mishearings auto-fixed.\n","info")
     _cwrite("  [corrected] lines show what was fixed in dim text.\n","info")
