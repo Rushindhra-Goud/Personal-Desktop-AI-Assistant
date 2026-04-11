@@ -1,0 +1,1452 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MAX — {{ session.get('display', session.get('username','User')) }}'s Assistant</title>
+<link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;500;600;700;800&family=JetBrains+Mono:wght@300;400;500&display=swap" rel="stylesheet">
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --g:#F5C518;--g2:#8A6C0A;--t:#00E5CC;--v:#9B59FF;--r:#FF5C5C;--m:#39FF85;--o:#FF8C30;
+  --bg0:#070B14;--bg1:#0C1220;--bg2:#111827;--bg3:#192338;--bg4:#1F2D47;
+  --tx0:#F0F6FF;--tx1:#8DA4C8;--tx2:#3D566E;--bd:#1E3054;
+}
+html,body{height:100%;overflow:hidden}
+body{font-family:'Syne',sans-serif;background:var(--bg0);color:var(--tx0);display:flex;flex-direction:column}
+.top{height:54px;background:var(--bg1);border-bottom:1px solid var(--bd);display:flex;align-items:center;padding:0 20px;gap:12px;flex-shrink:0;z-index:100}
+.logo{font-size:22px;font-weight:800;letter-spacing:-1px;color:var(--g);flex-shrink:0}
+.logo sup{font-size:9px;color:var(--t);font-family:'JetBrains Mono',monospace;font-weight:400;letter-spacing:2px;vertical-align:super}
+.sep{width:1px;height:20px;background:var(--bd)}
+.wake{padding:4px 14px;border-radius:20px;font-size:10px;font-family:'JetBrains Mono',monospace;font-weight:600;letter-spacing:1px;border:1px solid;transition:all .3s;flex-shrink:0}
+.w-idle{background:rgba(61,86,110,.2);border-color:var(--tx2);color:var(--tx2)}
+.w-listening{background:rgba(0,229,204,.12);border-color:var(--t);color:var(--t);animation:blink 1s ease-in-out infinite}
+.w-thinking{background:rgba(155,89,255,.12);border-color:var(--v);color:var(--v);animation:blink .8s ease-in-out infinite}
+.w-speaking{background:rgba(245,197,24,.12);border-color:var(--g);color:var(--g);animation:blink .6s ease-in-out infinite}
+.w-wake{background:rgba(57,255,133,.15);border-color:var(--m);color:var(--m);animation:blink .4s ease-in-out infinite}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.3}}
+.clock{font-family:'JetBrains Mono',monospace;font-size:13px;color:var(--tx1);background:var(--bg2);padding:5px 14px;border-radius:8px;border:1px solid var(--bd);margin-left:auto;flex-shrink:0}
+.uchip{display:flex;align-items:center;gap:8px;background:var(--bg3);padding:5px 14px;border-radius:20px;border:1px solid var(--bd);cursor:pointer;transition:all .2s;text-decoration:none;flex-shrink:0}
+.uchip:hover{border-color:var(--g)}
+.av{width:26px;height:26px;border-radius:50%;background:linear-gradient(135deg,var(--g),var(--t));display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;color:var(--bg0);flex-shrink:0}
+.uname{font-size:13px;font-weight:600;color:var(--tx0)}
+.logout-btn{padding:6px 14px;background:transparent;border:1px solid var(--bd);border-radius:8px;color:var(--tx2);font-size:12px;font-weight:600;cursor:pointer;text-decoration:none;transition:all .2s;flex-shrink:0;font-family:'Syne',sans-serif}
+.logout-btn:hover{border-color:var(--r);color:var(--r)}
+.body{display:flex;flex:1;overflow:hidden}
+.sb{width:200px;background:var(--bg1);border-right:1px solid var(--bd);display:flex;flex-direction:column;overflow:hidden;flex-shrink:0}
+.sb-inner{flex:1;overflow-y:auto;padding:10px 0;scrollbar-width:thin;scrollbar-color:var(--bd) transparent}
+.sb-inner::-webkit-scrollbar{width:3px}
+.sb-inner::-webkit-scrollbar-thumb{background:var(--bd);border-radius:2px}
+.sec-lbl{font-size:9px;font-family:'JetBrains Mono',monospace;letter-spacing:3px;color:var(--tx2);padding:12px 16px 4px;text-transform:uppercase}
+.sbb{display:flex;align-items:center;gap:10px;padding:11px 16px;cursor:pointer;font-size:13px;color:var(--tx1);font-weight:600;border:none;background:transparent;width:100%;text-align:left;transition:all .15s;border-right:3px solid transparent}
+.sbb:hover{background:rgba(255,255,255,.04);color:var(--tx0)}
+.sbb.on{background:rgba(245,197,24,.08);color:var(--g);border-right-color:var(--g)}
+.sbb .ic{width:20px;text-align:center;font-size:16px;flex-shrink:0}
+.sb-foot{padding:12px;border-top:1px solid var(--bd)}
+.sb-settings{display:flex;align-items:center;gap:10px;padding:10px 14px;cursor:pointer;font-size:13px;color:var(--tx1);font-weight:600;border:1px solid var(--bd);background:var(--bg2);width:100%;text-align:left;transition:all .15s;border-radius:10px}
+.sb-settings:hover{background:var(--bg3);border-color:var(--g);color:var(--g)}
+.main{flex:1;display:flex;flex-direction:column;overflow:hidden}
+.panel{display:none;flex:1;flex-direction:column;overflow:hidden}
+.panel.on{display:flex}
+.voice-panel{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:22px;padding:40px 20px;background:var(--bg0);position:relative;overflow:hidden}
+.voice-panel::before{content:'';position:absolute;inset:0;background:radial-gradient(ellipse at center, rgba(0,229,204,.04) 0%, transparent 70%);pointer-events:none}
+.voice-orb-wrap{position:relative;display:flex;align-items:center;justify-content:center}
+.voice-orb{width:160px;height:160px;border-radius:50%;background:radial-gradient(circle, rgba(0,229,204,.15) 0%, rgba(0,229,204,.05) 60%, transparent 100%);border:2px solid rgba(0,229,204,.3);display:flex;align-items:center;justify-content:center;cursor:pointer;transition:all .3s;position:relative}
+.voice-orb:hover{border-color:var(--t);background:radial-gradient(circle, rgba(0,229,204,.25) 0%, rgba(0,229,204,.1) 60%, transparent 100%)}
+.voice-orb.active{border-color:var(--r);background:radial-gradient(circle, rgba(255,92,92,.2) 0%, rgba(255,92,92,.08) 60%, transparent 100%);animation:orbpulse .8s ease-in-out infinite}
+.voice-orb .mic-icon{font-size:48px;transition:all .3s;user-select:none}
+.ring{position:absolute;border-radius:50%;border:1px solid rgba(0,229,204,.2);animation:ringout 2s ease-out infinite}
+.ring1{width:200px;height:200px;animation-delay:0s}
+.ring2{width:240px;height:240px;animation-delay:.5s}
+.ring3{width:280px;height:280px;animation-delay:1s}
+.voice-orb.active .ring{border-color:rgba(255,92,92,.3)}
+@keyframes ringout{0%{transform:scale(.9);opacity:.6}100%{transform:scale(1.1);opacity:0}}
+@keyframes orbpulse{0%,100%{transform:scale(1)}50%{transform:scale(1.04)}}
+.voice-status{font-size:16px;font-weight:600;color:var(--tx1);text-align:center;font-family:'JetBrains Mono',monospace;letter-spacing:1px}
+.voice-hint{font-size:12px;color:var(--tx2);text-align:center;font-family:'JetBrains Mono',monospace;max-width:360px;line-height:1.7}
+.voice-transcript{background:var(--bg2);border:1px solid var(--bd);border-radius:12px;padding:14px 20px;min-width:320px;max-width:500px;text-align:center;font-family:'JetBrains Mono',monospace;font-size:13px;color:var(--g);min-height:44px;transition:all .3s;display:none}
+.voice-transcript.show{display:block}
+.voice-response{background:var(--bg2);border:1px solid rgba(0,229,204,.2);border-radius:12px;padding:16px 20px;min-width:320px;max-width:500px;text-align:center;font-size:14px;color:var(--t);line-height:1.7;display:none}
+.voice-response.show{display:block}
+.voice-tips{display:flex;flex-wrap:wrap;gap:8px;justify-content:center;max-width:560px}
+.tip{background:var(--bg2);border:1px solid var(--bd);border-radius:20px;padding:6px 14px;font-size:11px;color:var(--tx1);font-family:'JetBrains Mono',monospace;cursor:pointer;transition:all .2s}
+.tip:hover{border-color:var(--t);color:var(--t)}
+.wake-banner{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:rgba(57,255,133,.15);border:1px solid var(--m);border-radius:30px;padding:8px 24px;font-size:12px;font-family:'JetBrains Mono',monospace;color:var(--m);letter-spacing:2px;z-index:500;opacity:0;transition:opacity .3s;pointer-events:none}
+.wake-banner.show{opacity:1}
+.cout{flex:1;overflow-y:auto;padding:16px 20px;font-family:'JetBrains Mono',monospace;font-size:12.5px;line-height:1.9;scrollbar-width:thin;scrollbar-color:var(--bd) transparent}
+.cout::-webkit-scrollbar{width:5px}
+.cout::-webkit-scrollbar-thumb{background:var(--bd);border-radius:3px}
+.msg{display:flex;gap:10px;align-items:flex-start;margin-bottom:5px;animation:msgin .18s ease both}
+@keyframes msgin{from{opacity:0;transform:translateX(-4px)}to{opacity:1;transform:translateX(0)}}
+.mts{font-size:9px;color:var(--tx2);margin-top:3px;flex-shrink:0;min-width:60px}
+.mtxt{flex:1;line-height:1.7;word-break:break-word}
+.c-max{color:var(--t)}.c-user{color:var(--g)}.c-info{color:var(--tx2)}
+.c-ok{color:var(--m)}.c-warn{color:var(--o)}.c-err{color:var(--r)}
+.c-ai{color:var(--v)}.c-dim{color:var(--bg4)}
+.ibar{border-top:1px solid var(--bd);background:var(--bg1);padding:12px 16px;display:flex;gap:8px;align-items:center;flex-shrink:0}
+.mic-btn{width:44px;height:44px;border-radius:50%;background:var(--bg3);border:1px solid var(--bd);color:var(--t);font-size:18px;cursor:pointer;transition:all .2s;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.mic-btn:hover{background:rgba(0,229,204,.1);border-color:var(--t)}
+.mic-btn.rec{background:rgba(255,92,92,.12);color:var(--r);border-color:var(--r);animation:blink .5s ease infinite}
+.cmd-input{flex:1;background:var(--bg0);border:1px solid var(--bd);border-radius:10px;padding:11px 16px;color:var(--tx0);font-family:'JetBrains Mono',monospace;font-size:13px;outline:none;transition:all .2s}
+.cmd-input:focus{border-color:var(--t);box-shadow:0 0 0 3px rgba(0,229,204,.08)}
+.cmd-input::placeholder{color:var(--tx2)}
+.send-btn{padding:11px 20px;background:var(--g);color:var(--bg0);border:none;border-radius:10px;font-family:'Syne',sans-serif;font-size:13px;font-weight:700;cursor:pointer;transition:all .2s;flex-shrink:0}
+.send-btn:hover{transform:translateY(-1px);box-shadow:0 4px 20px rgba(245,197,24,.3)}
+.dash{flex:1;overflow-y:auto;padding:20px;scrollbar-width:thin;scrollbar-color:var(--bd) transparent}
+.dash::-webkit-scrollbar{width:5px}
+.dash::-webkit-scrollbar-thumb{background:var(--bd);border-radius:3px}
+.stats-row{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:20px}
+.stat-card{background:var(--bg2);border:1px solid var(--bd);border-radius:14px;padding:16px 18px;cursor:pointer;transition:all .2s;position:relative;overflow:hidden}
+.stat-card:hover{border-color:rgba(255,255,255,.12);background:var(--bg3);transform:translateY(-2px)}
+.stat-card .st-label{font-size:9px;font-family:'JetBrains Mono',monospace;letter-spacing:3px;color:var(--tx2);text-transform:uppercase;margin-bottom:8px}
+.stat-card .st-val{font-size:28px;font-weight:700;font-family:'JetBrains Mono',monospace;line-height:1}
+.stat-card .st-bar{height:3px;border-radius:2px;margin-top:12px;background:var(--bg4)}
+.stat-card .st-fill{height:3px;border-radius:2px;transition:width .5s ease}
+.cmd-area{background:var(--bg2);border:1px solid var(--bd);border-radius:14px;padding:0;margin-bottom:20px;overflow:hidden}
+.cmd-area-header{display:flex;align-items:center;gap:8px;padding:12px 18px;border-bottom:1px solid var(--bd);background:var(--bg3)}
+.win-dot{width:10px;height:10px;border-radius:50%}
+.cmd-area-title{font-size:12px;color:var(--tx2);font-family:'JetBrains Mono',monospace;margin-left:4px}
+.cmd-area-body{padding:16px 18px;display:flex;gap:10px;align-items:center}
+.dash-cmd-input{flex:1;background:transparent;border:none;outline:none;font-family:'JetBrains Mono',monospace;font-size:14px;color:var(--tx0)}
+.dash-cmd-input::placeholder{color:var(--tx2)}
+.dash-mic-btn{width:40px;height:40px;border-radius:50%;background:var(--bg4);border:1px solid var(--bd);color:var(--t);font-size:16px;cursor:pointer;transition:all .2s;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.dash-mic-btn:hover{background:rgba(0,229,204,.15);border-color:var(--t);transform:scale(1.05)}
+.dash-mic-btn.rec{background:rgba(255,92,92,.15);color:var(--r);border-color:var(--r);animation:blink .5s ease infinite}
+.dash-send-btn{padding:9px 18px;background:var(--g);color:var(--bg0);border:none;border-radius:8px;font-family:'Syne',sans-serif;font-size:12px;font-weight:700;cursor:pointer;transition:all .2s;flex-shrink:0}
+.dash-send-btn:hover{transform:translateY(-1px);box-shadow:0 4px 16px rgba(245,197,24,.3)}
+.sl{font-size:9px;font-family:'JetBrains Mono',monospace;letter-spacing:3px;color:var(--tx2);text-transform:uppercase;margin-bottom:12px;padding-bottom:8px;border-bottom:1px solid var(--bd)}
+.quick-grid{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:20px}
+.qb{background:var(--bg2);border:1px solid var(--bd);border-radius:10px;padding:10px 14px;display:flex;align-items:center;gap:8px;cursor:pointer;transition:all .2s}
+.qb:hover{transform:translateY(-2px);border-color:rgba(255,255,255,.1);background:var(--bg3)}
+.qb .qi{font-size:18px}.qb .ql{font-size:12px;color:var(--tx1);font-weight:600}
+.two-col{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.panel-box{background:var(--bg2);border:1px solid var(--bd);border-radius:14px;overflow:hidden}
+.panel-box-hdr{padding:12px 16px;border-bottom:1px solid var(--bd);font-size:10px;font-family:'JetBrains Mono',monospace;letter-spacing:2px;color:var(--tx2);text-transform:uppercase;display:flex;align-items:center;justify-content:space-between}
+.panel-box-body{padding:12px 16px;max-height:220px;overflow-y:auto;scrollbar-width:thin;scrollbar-color:var(--bd) transparent}
+.rec-item{padding:8px 0;border-bottom:1px solid var(--bd);display:flex;align-items:flex-start;gap:8px}
+.rec-item:last-child{border-bottom:none}
+.rec-cmd{font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--g);font-weight:500;flex-shrink:0}
+.rec-resp{font-size:11px;color:var(--tx2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}
+.note-add{padding:5px 12px;background:var(--bg3);border:1px solid var(--bd);border-radius:8px;font-size:11px;font-family:'Syne',sans-serif;color:var(--tx1);cursor:pointer;transition:all .2s}
+.note-add:hover{border-color:var(--g);color:var(--g)}
+.scroll-panel{flex:1;overflow-y:auto;padding:20px;scrollbar-width:thin;scrollbar-color:var(--bd) transparent}
+.scroll-panel::-webkit-scrollbar{width:5px}
+.scroll-panel::-webkit-scrollbar-thumb{background:var(--bd);border-radius:3px}
+.sites-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:10px}
+.site-card{background:var(--bg2);border:1px solid var(--bd);border-radius:13px;padding:18px 12px;display:flex;flex-direction:column;align-items:center;gap:8px;cursor:pointer;transition:all .2s;text-align:center}
+.site-card:hover{transform:translateY(-3px);border-color:rgba(255,255,255,.12);background:var(--bg3)}
+.site-card .si{font-size:28px}.site-card .sn{font-size:13px;font-weight:600}
+.site-card .su{font-size:10px;color:var(--tx2);font-family:'JetBrains Mono',monospace}
+.tools-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.tool-card{background:var(--bg2);border:1px solid var(--bd);border-radius:13px;padding:18px;cursor:pointer;transition:all .2s}
+.tool-card:hover{border-color:rgba(255,255,255,.1);background:var(--bg3);transform:translateY(-1px)}
+.tool-card h3{font-size:14px;font-weight:700;margin-bottom:4px}
+.tool-card p{font-size:12px;color:var(--tx1);line-height:1.5;margin-bottom:10px}
+.tool-run{padding:6px 14px;border-radius:8px;border:none;font-family:'Syne',sans-serif;font-size:12px;font-weight:700;cursor:pointer;pointer-events:none}
+.hlog{display:flex;flex-direction:column;gap:8px}
+.hitem{background:var(--bg2);border:1px solid var(--bd);border-radius:10px;padding:12px 14px}
+.hcmd{font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--g);margin-bottom:3px}
+.hresp{font-size:12px;color:var(--tx1);line-height:1.5}
+.hmeta{font-size:10px;color:var(--tx2);margin-top:6px;font-family:'JetBrains Mono',monospace}
+.hsrc{display:inline-block;padding:1px 7px;border-radius:10px;font-size:9px;margin-left:6px;letter-spacing:1px}
+.src-voice{background:rgba(0,229,204,.1);color:var(--t)}
+.src-text{background:rgba(155,89,255,.1);color:var(--v)}
+.mbg{position:fixed;inset:0;background:rgba(7,11,20,.9);z-index:1000;display:none;align-items:center;justify-content:center;backdrop-filter:blur(4px)}
+.mbg.on{display:flex}
+.modal{background:var(--bg1);border:1px solid var(--bd);border-radius:18px;padding:28px;width:460px;max-width:95vw;animation:modin .22s cubic-bezier(.16,1,.3,1) both;box-shadow:0 40px 80px rgba(0,0,0,.6)}
+@keyframes modin{from{opacity:0;transform:scale(.92)}to{opacity:1;transform:scale(1)}}
+.modal h2{font-size:18px;font-weight:700;margin-bottom:4px}
+.modal .mdesc{font-size:12px;color:var(--tx1);margin-bottom:16px;font-family:'JetBrains Mono',monospace}
+.mi{width:100%;padding:12px 14px;background:var(--bg0);border:1px solid var(--bd);border-radius:9px;color:var(--tx0);font-family:'JetBrains Mono',monospace;font-size:13px;outline:none;transition:all .2s;margin-bottom:10px}
+.mi:focus{border-color:var(--t)}
+.mta{width:100%;height:150px;background:var(--bg0);border:1px solid var(--bd);border-radius:9px;padding:12px 14px;color:var(--tx0);font-family:'JetBrains Mono',monospace;font-size:13px;outline:none;resize:none;line-height:1.7;transition:all .2s;margin-bottom:10px}
+.mta:focus{border-color:var(--t)}
+.mres{background:var(--bg0);border:1px solid var(--bd);border-radius:9px;padding:12px 14px;font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--m);min-height:42px;margin-bottom:10px;line-height:1.6;white-space:pre-wrap;display:none}
+.mbtns{display:flex;gap:8px}
+.mbtn{flex:1;padding:11px;border-radius:9px;border:none;font-family:'Syne',sans-serif;font-size:13px;font-weight:700;cursor:pointer;transition:all .15s}
+.mok{background:var(--g);color:var(--bg0)}.mcancel{background:var(--bg3);color:var(--tx1)}
+.mbtn:hover{opacity:.9}
+.api-note{background:rgba(255,140,48,.08);border:1px solid rgba(255,140,48,.25);border-radius:8px;padding:9px 12px;font-size:11px;color:var(--o);font-family:'JetBrains Mono',monospace;margin-bottom:10px}
+.tdisp{font-size:52px;font-weight:800;text-align:center;font-family:'JetBrains Mono',monospace;color:var(--t);letter-spacing:-2px;padding:14px 0}
+.tlbl{text-align:center;font-size:11px;color:var(--tx2);margin-bottom:10px;font-family:'JetBrains Mono',monospace}
+.tw{position:fixed;top:64px;right:16px;z-index:2000;display:flex;flex-direction:column;gap:6px}
+.toast{background:var(--bg2);border:1px solid var(--bd);border-radius:11px;padding:10px 14px;display:flex;align-items:center;gap:10px;font-size:12px;min-width:220px;max-width:340px;animation:tin .28s cubic-bezier(.16,1,.3,1) both;box-shadow:0 8px 30px rgba(0,0,0,.3)}
+@keyframes tin{from{opacity:0;transform:translateX(24px)}to{opacity:1;transform:translateX(0)}}
+.toast.tout{animation:tout .2s ease forwards}
+@keyframes tout{to{opacity:0;transform:translateX(24px)}}
+.tc{color:var(--tx2);cursor:pointer;margin-left:auto;font-size:11px}
+.tc:hover{color:var(--tx0)}
+</style>
+</head>
+<body>
+
+<div class="top">
+  <div class="logo">MAX<sup>v5.4</sup></div>
+  <div class="sep"></div>
+  <div class="wake w-idle" id="wake">● IDLE</div>
+  <div class="clock" id="clock">00:00:00</div>
+  <div class="uchip" onclick="openSettings()">
+    <div class="av">{{ session.get('display', session.get('username','U'))[0].upper() }}</div>
+    <div class="uname">{{ session.get('display', session.get('username','User')) }}</div>
+    <span style="color:var(--tx2);font-size:11px">⚙</span>
+  </div>
+  <a href="/logout" class="logout-btn">⏻ Logout</a>
+</div>
+
+<div class="wake-banner" id="wakeBanner">🎤 MAX IS LISTENING…</div>
+
+<div class="body">
+<div class="sb">
+  <div class="sb-inner">
+    <div class="sec-lbl">Navigation</div>
+    <button class="sbb on" id="sb-voice" onclick="sw('voice')"><span class="ic">🎤</span>Voice Mode</button>
+    <button class="sbb" id="sb-console" onclick="sw('console')"><span class="ic">⬛</span>Console</button>
+    <button class="sbb" id="sb-dashboard" onclick="sw('dashboard')"><span class="ic">⊞</span>Dashboard</button>
+    <button class="sbb" id="sb-sites" onclick="sw('sites')"><span class="ic">🌐</span>Sites</button>
+    <button class="sbb" id="sb-tools" onclick="sw('tools')"><span class="ic">⚙</span>Tools</button>
+    <button class="sbb" id="sb-history" onclick="sw('history')"><span class="ic">📋</span>History</button>
+  </div>
+  <div class="sb-foot">
+    <button class="sb-settings" onclick="openSettings()"><span class="ic">🔑</span>Settings / API Keys</button>
+  </div>
+</div>
+
+<div class="main">
+
+<!-- VOICE PANEL -->
+<div class="panel on" id="p-voice">
+  <div class="voice-panel">
+    <div style="text-align:center">
+      <div style="font-size:12px;color:var(--tx2);font-family:'JetBrains Mono',monospace;letter-spacing:2px;text-transform:uppercase;margin-bottom:6px">Voice Command Mode</div>
+      <div style="font-size:24px;font-weight:800;letter-spacing:-1px">Tap the orb and speak</div>
+      <div style="font-size:11px;color:var(--tx2);font-family:'JetBrains Mono',monospace;margin-top:6px">Say <span style="color:var(--m)">"Hey MAX"</span> from any tab to wake me up</div>
+    </div>
+    <div class="voice-orb-wrap">
+      <div class="ring ring1"></div>
+      <div class="ring ring2"></div>
+      <div class="ring ring3"></div>
+      <div class="voice-orb" id="voiceOrb" onclick="handleOrbClick()">
+        <span class="mic-icon" id="micIcon">🎤</span>
+      </div>
+    </div>
+    <div class="voice-status" id="voiceStatus">Click the orb or press Space to start</div>
+    <div class="voice-transcript" id="voiceTrans"></div>
+    <div class="voice-response" id="voiceResp"></div>
+    <div style="text-align:center;font-size:11px;color:var(--tx2);font-family:'JetBrains Mono',monospace">Try saying:</div>
+    <div class="voice-tips">
+      <div class="tip" onclick="rc('open youtube')">open youtube</div>
+      <div class="tip" onclick="rc('what time')">what time is it</div>
+      <div class="tip" onclick="rc('tell me a joke')">tell me a joke</div>
+      <div class="tip" onclick="rc('weather in Warangal')">weather in Warangal</div>
+      <div class="tip" onclick="rc('calculate 25 times 4')">calculate 25 times 4</div>
+      <div class="tip" onclick="rc('battery')">battery percentage</div>
+      <div class="tip" onclick="rc('open notepad')">open notepad</div>
+      <div class="tip" onclick="om('ai')">ask claude AI anything</div>
+    </div>
+  </div>
+</div>
+
+<!-- CONSOLE PANEL -->
+<div class="panel" id="p-console">
+  <div class="cout" id="cout"></div>
+  <div class="ibar">
+    <button class="mic-btn" id="micBtn" title="Voice Input">🎤</button>
+    <input class="cmd-input" id="cmd" placeholder="Type a command… 'open notepad', 'open youtube', 'battery', 'cpu'">
+    <button class="send-btn" onclick="send()">Send →</button>
+  </div>
+</div>
+
+<!-- DASHBOARD PANEL -->
+<div class="panel" id="p-dashboard">
+<div class="dash">
+  <div class="stats-row">
+    <div class="stat-card" onclick="rc('cpu');sw('console')">
+      <div class="st-label">⚡ CPU Usage</div>
+      <div class="st-val" id="scpu" style="color:var(--t)">—</div>
+      <div class="st-bar"><div class="st-fill" id="scpu-bar" style="background:var(--t);width:0%"></div></div>
+    </div>
+    <div class="stat-card" onclick="rc('ram');sw('console')">
+      <div class="st-label">🧠 RAM Usage</div>
+      <div class="st-val" id="sram" style="color:var(--v)">—</div>
+      <div class="st-bar"><div class="st-fill" id="sram-bar" style="background:var(--v);width:0%"></div></div>
+    </div>
+    <div class="stat-card" onclick="rc('disk');sw('console')">
+      <div class="st-label">💾 Disk Usage</div>
+      <div class="st-val" id="sdisk" style="color:var(--m)">—</div>
+      <div class="st-bar"><div class="st-fill" id="sdisk-bar" style="background:var(--m);width:0%"></div></div>
+    </div>
+    <div class="stat-card" onclick="rc('battery');sw('console')">
+      <div class="st-label">🔋 Battery</div>
+      <div class="st-val" id="sbat" style="color:var(--g)">—</div>
+      <div class="st-bar"><div class="st-fill" id="sbat-bar" style="background:var(--g);width:0%"></div></div>
+    </div>
+  </div>
+  <div class="cmd-area" style="margin-bottom:20px">
+    <div class="cmd-area-header">
+      <div class="win-dot" style="background:#FF5C5C"></div>
+      <div class="win-dot" style="background:#F5C518"></div>
+      <div class="win-dot" style="background:#39FF85"></div>
+      <div class="cmd-area-title">MAX — {{ session.get('display', session.get('username','User')) }} @ assistant</div>
+    </div>
+    <div class="cmd-area-body">
+      <span style="color:var(--t);font-family:'JetBrains Mono',monospace;font-size:14px;flex-shrink:0">›</span>
+      <input class="dash-cmd-input" id="dashCmd" placeholder="Type a command or ask anything…">
+      <button class="dash-mic-btn" id="dashMicBtn" title="Voice Input">🎤</button>
+      <button class="dash-send-btn" onclick="sendDash()">▶</button>
+    </div>
+  </div>
+  <div class="sl">Quick Actions</div>
+  <div class="quick-grid" style="margin-bottom:20px">
+    <div class="qb" onclick="rc('what time')"><div class="qi">⏰</div><div class="ql">Time</div></div>
+    <div class="qb" onclick="om('weather')"><div class="qi">🌤</div><div class="ql">Weather</div></div>
+    <div class="qb" onclick="rc('cpu')"><div class="qi">⚡</div><div class="ql">CPU</div></div>
+    <div class="qb" onclick="rc('joke')"><div class="qi">😄</div><div class="ql">Joke</div></div>
+    <div class="qb" onclick="rc('quote')"><div class="qi">💬</div><div class="ql">Quote</div></div>
+    <div class="qb" onclick="rc('news')"><div class="qi">📰</div><div class="ql">News</div></div>
+    <div class="qb" onclick="rc('open youtube')"><div class="qi">▶</div><div class="ql">YouTube</div></div>
+    <div class="qb" onclick="rc('open github')"><div class="qi">⌥</div><div class="ql">GitHub</div></div>
+    <div class="qb" onclick="rc('open gmail')"><div class="qi">✉</div><div class="ql">Gmail</div></div>
+    <div class="qb" onclick="rc('open notepad')"><div class="qi">📝</div><div class="ql">Notepad</div></div>
+    <div class="qb" onclick="rc('battery')"><div class="qi">🔋</div><div class="ql">Battery</div></div>
+    <div class="qb" onclick="rc('help')"><div class="qi">❓</div><div class="ql">Help</div></div>
+  </div>
+  <div class="two-col">
+    <div class="panel-box">
+      <div class="panel-box-hdr"><span>📋 Recent Commands</span></div>
+      <div class="panel-box-body" id="recentCmds">
+        {% for log in recent %}
+        <div class="rec-item">
+          <span class="rec-cmd">{{ log.command[:20] }}</span>
+          <span class="rec-resp">{{ log.response[:60] }}</span>
+        </div>
+        {% else %}
+        <div style="color:var(--tx2);font-size:12px;font-family:'JetBrains Mono',monospace;padding:8px 0">No commands yet.</div>
+        {% endfor %}
+      </div>
+    </div>
+    <div class="panel-box">
+      <div class="panel-box-hdr">
+        <span>📝 Notes</span>
+        <button class="note-add" onclick="om('note')">+ Add</button>
+      </div>
+      <div class="panel-box-body">
+        {% for note in notes %}
+        <div class="rec-item">
+          <span class="rec-cmd">{{ note.title[:20] }}</span>
+          <span class="rec-resp">{{ note.content[:60] }}</span>
+        </div>
+        {% else %}
+        <div style="color:var(--tx2);font-size:12px;font-family:'JetBrains Mono',monospace;padding:8px 0">No notes yet.</div>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+</div>
+</div>
+
+<!-- SITES PANEL -->
+<div class="panel" id="p-sites">
+<div class="scroll-panel">
+  <div class="sl" style="margin-bottom:14px">All Sites — click to open in new tab</div>
+  <div class="sites-grid" id="sitesGrid"></div>
+</div>
+</div>
+
+<!-- TOOLS PANEL -->
+<div class="panel" id="p-tools">
+<div class="scroll-panel">
+  <div class="sl" style="margin-bottom:14px">Tools & Utilities</div>
+  <div class="tools-grid" id="toolsGrid"></div>
+</div>
+</div>
+
+<!-- HISTORY PANEL -->
+<div class="panel" id="p-history">
+<div class="scroll-panel">
+  <div class="sl" style="margin-bottom:14px">Command History (last 50)</div>
+  <div class="hlog" id="histLog"><div style="color:var(--tx2);font-size:13px;font-family:'JetBrains Mono',monospace">Loading…</div></div>
+</div>
+</div>
+
+</div><!-- /main -->
+</div><!-- /body -->
+
+<div class="tw" id="tw"></div>
+<div class="mbg" id="mbg" onclick="if(event.target===this)cm()">
+  <div class="modal">
+    <h2 id="mtitle"></h2>
+    <div class="mdesc" id="mdesc"></div>
+    <div id="mbody"></div>
+  </div>
+</div>
+
+<script>
+// ══════════════════════════════════════════════════════════════════════
+//  MAX v5.4 — COMPLETE FIX
+//
+//  BUG 1 FIX — TAB CLOSING (ALL sites, not just YouTube):
+//    • openedWindows registry now covers ALL methods of opening: voice, text,
+//      sites-grid click, quick-action click, tools panel — everything
+//    • findSiteKey() fuzzy-matches partial names so "close instagram",
+//      "close stack overflow", "close google maps" etc. all work
+//    • closeGenericTab() picks the most-recently-opened tracked tab
+//    • If a window ref exists but was closed by user, we catch the error
+//      gracefully instead of crashing or giving a false error message
+//
+//  BUG 2 FIX — APPS OPEN FULL / CENTERED:
+//    • Server now calls _maximize_window_by_exe() in a background thread
+//      via pywin32 (win32gui) after launching the process
+//    • Install with: pip install pywin32
+//    • If pywin32 is missing, apps still open (just won't auto-maximize)
+//
+//  BUG 3 FIX — APPS SAY "CLOSED" BUT STILL RUNNING:
+//    • PROC_MAP now has correct exe names for ALL apps including UWP/Store
+//    • Calculator, Camera, Photos are UWP apps — they need window-title kill
+//    • Triple kill strategy: psutil → taskkill /IM → PowerShell Stop-Process
+//    • UWP_TITLE_MAP provides window title keywords for stubborn UWP apps
+// ══════════════════════════════════════════════════════════════════════
+
+const USER = '{{ session.get("display", session.get("username","User")) }}';
+
+const SITES_DATA = {
+  youtube:       {n:'YouTube',      i:'▶', u:'https://www.youtube.com'},
+  gmail:         {n:'Gmail',        i:'✉', u:'https://mail.google.com'},
+  google:        {n:'Google',       i:'G', u:'https://www.google.com'},
+  github:        {n:'GitHub',       i:'⌥', u:'https://github.com'},
+  linkedin:      {n:'LinkedIn',     i:'💼',u:'https://www.linkedin.com'},
+  whatsapp:      {n:'WhatsApp',     i:'💬',u:'https://web.whatsapp.com'},
+  instagram:     {n:'Instagram',    i:'📷',u:'https://www.instagram.com'},
+  twitter:       {n:'Twitter/X',    i:'✕', u:'https://twitter.com'},
+  reddit:        {n:'Reddit',       i:'🤖',u:'https://www.reddit.com'},
+  discord:       {n:'Discord',      i:'🎮',u:'https://discord.com/app'},
+  spotify:       {n:'Spotify',      i:'♪', u:'https://open.spotify.com'},
+  netflix:       {n:'Netflix',      i:'N', u:'https://www.netflix.com'},
+  amazon:        {n:'Amazon',       i:'📦',u:'https://www.amazon.in'},
+  chatgpt:       {n:'ChatGPT',      i:'🤖',u:'https://chat.openai.com'},
+  gemini:        {n:'Gemini',       i:'✦', u:'https://gemini.google.com'},
+  notion:        {n:'Notion',       i:'◻', u:'https://www.notion.so'},
+  maps:          {n:'Google Maps',  i:'📍',u:'https://maps.google.com'},
+  drive:         {n:'Google Drive', i:'🗂', u:'https://drive.google.com'},
+  meet:          {n:'Google Meet',  i:'📹',u:'https://meet.google.com'},
+  docs:          {n:'Google Docs',  i:'📄',u:'https://docs.google.com'},
+  sheets:        {n:'Sheets',       i:'📊',u:'https://sheets.google.com'},
+  stackoverflow: {n:'Stack Overflow',i:'🔶',u:'https://stackoverflow.com'},
+};
+
+// ══════════════════════════════════════════════════════════════════════
+//  WINDOW REGISTRY
+//  Key  → { win: WindowRef|null, name: string, url: string, ts: Date }
+//  Rule: EVERY site open goes through openSiteWindow().
+//        EVERY site close goes through closeSiteTab().
+// ══════════════════════════════════════════════════════════════════════
+const openedWindows = {};
+// Stack of keys in open-order (most recent last) for generic close
+const openOrder = [];
+
+function _trackWindow(siteKey, win, siteName, url) {
+  openedWindows[siteKey] = { win, name: siteName, url, ts: Date.now() };
+  // Remove from order array if already there, then push to end
+  const idx = openOrder.indexOf(siteKey);
+  if (idx !== -1) openOrder.splice(idx, 1);
+  openOrder.push(siteKey);
+}
+
+function _untrackWindow(siteKey) {
+  delete openedWindows[siteKey];
+  const idx = openOrder.indexOf(siteKey);
+  if (idx !== -1) openOrder.splice(idx, 1);
+}
+
+// ── Desktop app keys (server handles open/close for these)
+const DESKTOP_APP_KEYS = [
+  'notepad','calculator','calc','paint','explorer','file explorer','files',
+  'task manager','taskmanager','cmd','command prompt','terminal',
+  'powershell','power shell','word','ms word','microsoft word',
+  'excel','ms excel','spreadsheet','powerpoint','power point','ppt',
+  'vs code','vscode','visual studio code','visual studio',
+  'edge','microsoft edge','firefox','mozilla firefox',
+  'chrome','google chrome','vlc','vlc media player',
+  'zoom','zoom meeting','teams','microsoft teams',
+  'slack','discord','spotify','snipping tool','snip',
+  'settings','windows settings','control panel','camera','photos',
+  'clock','calendar','mail','store','sticky notes','music'
+];
+
+function isDesktopApp(target) {
+  const t = target.toLowerCase().trim();
+  return DESKTOP_APP_KEYS.some(k => k === t || k.includes(t) || t.includes(k));
+}
+
+// ── Clock
+function tick(){
+  document.getElementById('clock').textContent = new Date().toLocaleTimeString('en-US',{hour12:false});
+}
+setInterval(tick,1000); tick();
+
+// ── Wake badge
+function setWake(s){
+  const b = document.getElementById('wake');
+  b.className = 'wake';
+  const m = {
+    idle:      ['w-idle',     '● IDLE'],
+    listening: ['w-listening','◉ LISTENING'],
+    thinking:  ['w-thinking', '◎ THINKING'],
+    speaking:  ['w-speaking', '◎ SPEAKING'],
+    wake:      ['w-wake',     '⚡ WAKE WORD'],
+  };
+  const [c,l] = m[s] || m.idle;
+  b.classList.add(c); b.textContent = l;
+}
+
+// ── Beep
+function beep(freq=880,dur=0.18,vol=0.4){
+  try{
+    const ctx = new(window.AudioContext||window.webkitAudioContext)();
+    const osc = ctx.createOscillator(), gain = ctx.createGain();
+    osc.connect(gain); gain.connect(ctx.destination);
+    osc.type='sine'; osc.frequency.value=freq;
+    gain.gain.setValueAtTime(vol,ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001,ctx.currentTime+dur);
+    osc.start(ctx.currentTime); osc.stop(ctx.currentTime+dur);
+  }catch(e){}
+}
+function wakeBeep(){ beep(880,0.12,0.3); setTimeout(()=>beep(1100,0.15,0.35),130); }
+
+// ── TTS
+const synth = window.speechSynthesis;
+function speak(text, onDone){
+  if(!synth){ if(onDone) setTimeout(onDone,300); return; }
+  synth.cancel();
+  const plain = text.replace(/\*\*/g,'').replace(/[^\x00-\x7F]/g,'').replace(/\s+/g,' ').trim().substring(0,300);
+  if(!plain){ if(onDone) setTimeout(onDone,100); return; }
+  const u = new SpeechSynthesisUtterance(plain);
+  u.rate=1.05; u.pitch=1; u.volume=1;
+  const voices = synth.getVoices();
+  const v = voices.find(v=>v.name.toLowerCase().includes('google')&&v.lang==='en-US')
+           || voices.find(v=>v.lang.startsWith('en')) || voices[0];
+  if(v) u.voice = v;
+  u.onstart = ()=>setWake('speaking');
+  u.onend   = ()=>{ setWake('idle'); if(onDone) setTimeout(onDone,100); };
+  u.onerror = ()=>{ setWake('idle'); if(onDone) setTimeout(onDone,100); };
+  synth.speak(u);
+}
+function speakThen(text, callback){ speak(text, callback); }
+if(synth && synth.onvoiceschanged !== undefined) synth.onvoiceschanged = ()=>synth.getVoices();
+
+// ── Wake words
+const WAKE_WORDS = [
+  'hey max','ok max','hi max','hello max','yo max','aye max',
+  'hey mack','hey mac','okay max','hey marks','hay max',
+];
+
+function stripWakeWords(text){
+  let t = text.toLowerCase().trim();
+  const sorted = [...WAKE_WORDS].sort((a,b)=>b.length-a.length);
+  for(const w of sorted){
+    const rx = new RegExp('^'+w.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'[,\\.\\s]*','i');
+    if(rx.test(t)){ t = t.replace(rx,'').trim(); break; }
+  }
+  return t;
+}
+
+function isWakeWord(text){
+  const t = text.toLowerCase().trim();
+  return WAKE_WORDS.some(w=>t===w||t.startsWith(w+' ')||t.startsWith(w+',')||t.includes(' '+w+' ')||t.endsWith(' '+w));
+}
+
+// ══════════════════════════════════════════════════════════════════════
+//  VOICE STATE MACHINE
+// ══════════════════════════════════════════════════════════════════════
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+let activeRecog    = null;
+let appMode        = 'idle';
+let cmdDashMode    = false;
+let wakeDetectedAt = 0;
+let wakeScheduled  = false;
+
+function stopAll(){
+  appMode = 'idle'; wakeScheduled = false;
+  if(activeRecog){ try{activeRecog.abort();}catch(e){} activeRecog=null; }
+  setMicUI(false); setWake('idle');
+}
+
+function setMicUI(recording){
+  const orb  = document.getElementById('voiceOrb');
+  const ico  = document.getElementById('micIcon');
+  const btn  = document.getElementById('micBtn');
+  const dbtn = document.getElementById('dashMicBtn');
+  if(recording){
+    orb.classList.add('active'); ico.textContent='⏹';
+    btn.textContent='⏹'; btn.classList.add('rec');
+    dbtn.textContent='⏹'; dbtn.classList.add('rec');
+  }else{
+    orb.classList.remove('active'); ico.textContent='🎤';
+    btn.textContent='🎤'; btn.classList.remove('rec');
+    dbtn.textContent='🎤'; dbtn.classList.remove('rec');
+  }
+}
+
+function startWake(){
+  if(!SR) return;
+  if(activeRecog){ try{activeRecog.abort();}catch(e){} activeRecog=null; }
+  appMode='wake'; wakeScheduled=false;
+  setMicUI(false); setWake('idle');
+  const r = new SR();
+  r.lang='en-US'; r.continuous=false; r.interimResults=true; r.maxAlternatives=5;
+  let wakeTriggered = false;
+  r.onresult = e=>{
+    if(wakeTriggered) return;
+    for(let i=0;i<e.results.length;i++){
+      for(let a=0;a<e.results[i].length;a++){
+        const t = (e.results[i][a].transcript||'').toLowerCase().trim();
+        if(isWakeWord(t)){
+          wakeTriggered=true;
+          try{r.abort();}catch(ex){}
+          activeRecog=null; appMode='detected'; onWakeDetected(); return;
+        }
+      }
+    }
+  };
+  r.onerror = e=>{
+    activeRecog=null;
+    if(e.error==='not-allowed'){ appMode='idle'; toast('Microphone denied.','🎤','warn',6000); return; }
+    if(appMode==='wake') scheduleWake();
+  };
+  r.onend = ()=>{ activeRecog=null; if(appMode==='wake') scheduleWake(); };
+  try{ r.start(); activeRecog=r; }
+  catch(e){ activeRecog=null; if(appMode==='wake') scheduleWake(); }
+}
+
+function scheduleWake(){
+  if(wakeScheduled) return;
+  wakeScheduled=true;
+  setTimeout(()=>{ wakeScheduled=false; if(appMode==='wake'||appMode==='idle'){ appMode='wake'; startWake(); } },80);
+}
+
+function onWakeDetected(){
+  wakeDetectedAt=Date.now(); wakeBeep(); setWake('wake');
+  const banner = document.getElementById('wakeBanner');
+  banner.classList.add('show'); setTimeout(()=>banner.classList.remove('show'),2500);
+  const wakeMsg = 'Tell me, '+USER;
+  cw('MAX [wake]: '+wakeMsg,'c-ok');
+  toast('Hey MAX detected — speak your command!','🎤','ok',3000);
+  speakThen(wakeMsg, ()=>startCommand(false));
+}
+
+function startCommand(dashMode){
+  if(!SR){ toast('Voice not supported. Use Google Chrome.','⚠','warn',5000); scheduleWake(); return; }
+  if(activeRecog){ try{activeRecog.abort();}catch(e){} activeRecog=null; }
+  appMode='command'; cmdDashMode=dashMode;
+  const r = new SR();
+  r.lang='en-US'; r.continuous=false; r.interimResults=true; r.maxAlternatives=3;
+  let commandFired = false;
+  r.onstart = ()=>{
+    setWake('listening'); setMicUI(true);
+    document.getElementById('voiceStatus').textContent='Listening… speak your command';
+    const t=document.getElementById('voiceTrans'); t.textContent=''; t.classList.add('show');
+    document.getElementById('voiceResp').classList.remove('show');
+  };
+  r.onresult = e=>{
+    let interim='', final='';
+    for(let i=e.resultIndex;i<e.results.length;i++){
+      if(e.results[i].isFinal) final+=e.results[i][0].transcript;
+      else interim+=e.results[i][0].transcript;
+    }
+    document.getElementById('voiceTrans').textContent=final||interim;
+    if(final && !commandFired){
+      const msSinceWake=Date.now()-wakeDetectedAt;
+      const cleaned=stripWakeWords(final).trim();
+      if(msSinceWake<700||!cleaned){
+        document.getElementById('voiceStatus').textContent='Listening… speak your command';
+        document.getElementById('voiceTrans').textContent=''; return;
+      }
+      commandFired=true;
+      document.getElementById('voiceStatus').textContent='Got: "'+cleaned+'"';
+      document.getElementById('cmd').value=cleaned;
+      if(cmdDashMode) document.getElementById('dashCmd').value=cleaned;
+      try{r.abort();}catch(ex){}
+      sendVoice(cleaned);
+    }
+  };
+  r.onerror = e=>{
+    activeRecog=null; stopAll();
+    if(e.error==='not-allowed') toast('Microphone access denied.','🎤','warn',7000);
+    else if(e.error==='no-speech'){ cw('MAX: No speech detected. Try again.','c-warn'); speak("I didn't catch that."); }
+    else if(e.error!=='aborted') toast('Mic error: '+e.error,'⚠','warn');
+    scheduleWake();
+  };
+  r.onend = ()=>{ activeRecog=null; setMicUI(false); if(appMode==='command'){ appMode='idle'; scheduleWake(); } };
+  try{ r.start(); activeRecog=r; }
+  catch(e){ activeRecog=null; stopAll(); toast('Could not start mic: '+e.message,'⚠','err'); scheduleWake(); }
+}
+
+function handleOrbClick(){ unlockAudio(); if(appMode==='command'){ stopAll(); scheduleWake(); }else{ stopAll(); startCommand(false); } }
+function handleMicClick(){ unlockAudio(); if(appMode==='command'){ stopAll(); scheduleWake(); }else{ stopAll(); startCommand(false); } }
+function handleDashMicClick(){ unlockAudio(); if(appMode==='command'){ stopAll(); scheduleWake(); }else{ stopAll(); startCommand(true); } }
+
+document.getElementById('micBtn').addEventListener('click', handleMicClick);
+document.getElementById('dashMicBtn').addEventListener('click', handleDashMicClick);
+
+document.addEventListener('keydown', e=>{
+  if(e.code==='Space' && document.activeElement!==document.getElementById('cmd') && document.activeElement!==document.getElementById('dashCmd')){
+    e.preventDefault(); unlockAudio(); handleOrbClick();
+  }
+  if(e.key==='Escape'){ cm(); document.getElementById('mbg').classList.remove('on'); }
+});
+
+// ══════════════════════════════════════════════════════════════════════
+//  OPEN A SITE — ALWAYS use this function, never window.open() directly
+//  Uses a stable window name (max_site_KEY) so repeated opens reuse the tab
+// ══════════════════════════════════════════════════════════════════════
+function openSiteWindow(siteKey, url, siteName) {
+  const winName = 'max_' + siteKey.replace(/[^a-z0-9]/gi, '_');
+  let win = null;
+  try {
+    win = window.open(url, winName);
+  } catch(e) {
+    win = null;
+  }
+
+  if (win) {
+    _trackWindow(siteKey, win, siteName, url);
+    try { win.focus(); } catch(e) {}
+    return true;
+  } else {
+    // Popup blocked — track null so we still know it was "opened"
+    _trackWindow(siteKey, null, siteName, url);
+    toast('Popup blocked! Allow popups in your browser settings.', '⚠', 'warn', 6000);
+    return false;
+  }
+}
+
+// ══════════════════════════════════════════════════════════════════════
+//  CLOSE A SITE TAB — FIXED v5.4
+//
+//  Priority:
+//    1. If window ref is tracked and not closed → close it
+//    2. If window ref is tracked but appears closed → confirm and clean up
+//    3. If not tracked → tell user to close manually
+//  No more false "already closed" errors.
+// ══════════════════════════════════════════════════════════════════════
+function closeSiteTab(siteKey, siteName) {
+  const entry = openedWindows[siteKey];
+  const displayName = siteName || (SITES_DATA[siteKey] && SITES_DATA[siteKey].n) || siteKey;
+
+  if (!entry) {
+    // Was never opened by MAX this session
+    const msg = displayName + ' was not opened by MAX this session. Please close it manually.';
+    cw('MAX: ' + msg, 'c-warn');
+    speak('Please close ' + displayName + ' manually from your browser.');
+    toast(msg, '⚠', 'warn');
+    return;
+  }
+
+  if (!entry.win) {
+    // Popup was blocked when opened
+    _untrackWindow(siteKey);
+    const msg = displayName + ' was popup-blocked when opened. Please close it manually if open.';
+    cw('MAX: ' + msg, 'c-warn');
+    speak('Please close ' + displayName + ' manually.');
+    toast(msg, '⚠', 'warn');
+    return;
+  }
+
+  // Check if window is already closed by the user
+  let isClosed = false;
+  try {
+    // Accessing .closed on a cross-origin window may throw in some browsers
+    isClosed = entry.win.closed;
+  } catch(e) {
+    isClosed = false; // Can't tell, assume open and try to close
+  }
+
+  if (isClosed) {
+    _untrackWindow(siteKey);
+    const msg = displayName + ' was already closed. ✓';
+    cw('MAX: ' + msg, 'c-info');
+    speak(displayName + ' was already closed.');
+    toast(msg, '🗑', 'ok');
+    return;
+  }
+
+  // Window exists and is open — close it
+  try {
+    entry.win.close();
+    _untrackWindow(siteKey);
+    const msg = 'Closed ' + displayName + ' tab! 🗑';
+    cw('MAX: ' + msg, 'c-max');
+    speak('Closed ' + displayName);
+    toast(msg, '🗑', 'ok');
+  } catch(e) {
+    // Cross-origin restriction (window was navigated away or is cross-origin)
+    // The tab still exists; we can't close it programmatically after navigation
+    _untrackWindow(siteKey);
+    const msg = 'Cannot close ' + displayName + ' automatically — please press Ctrl+W in that tab.';
+    cw('MAX: ' + msg, 'c-warn');
+    speak('Please close ' + displayName + ' manually with Control W.');
+    toast(msg, '⚠', 'warn', 6000);
+  }
+}
+
+// Generic "close tab" — closes the most recently opened tracked tab
+function closeGenericTab() {
+  // Walk openOrder from most-recent to oldest
+  for (let i = openOrder.length - 1; i >= 0; i--) {
+    const k = openOrder[i];
+    const entry = openedWindows[k];
+    if (!entry) continue;
+    // Check if already closed
+    let closed = false;
+    try { closed = entry.win ? entry.win.closed : true; } catch(e) {}
+    if (!closed) {
+      closeSiteTab(k, entry.name);
+      return;
+    } else {
+      // Already closed externally, clean up silently
+      _untrackWindow(k);
+    }
+  }
+  cw('MAX: No open tabs tracked by MAX this session.', 'c-warn');
+  speak('No tracked tabs to close.');
+}
+
+// ══════════════════════════════════════════════════════════════════════
+//  FIND SITE KEY from partial text
+//  Tries: exact → name exact → key partial → name partial → fuzzy
+// ══════════════════════════════════════════════════════════════════════
+function findSiteKey(target) {
+  const t = (target || '').toLowerCase().trim();
+  if (!t) return null;
+
+  // 1. Exact key match
+  if (SITES_DATA[t]) return t;
+
+  // 2. Exact display name match (case-insensitive)
+  for (const [k, v] of Object.entries(SITES_DATA)) {
+    if (v.n.toLowerCase() === t) return k;
+  }
+
+  // 3. Key fully contains target OR target fully contains key (longest first)
+  const byLen = Object.keys(SITES_DATA).sort((a,b) => b.length - a.length);
+  for (const k of byLen) {
+    if (k.includes(t) || t.includes(k)) return k;
+  }
+
+  // 4. Display name partial match
+  for (const [k, v] of Object.entries(SITES_DATA)) {
+    const nl = v.n.toLowerCase();
+    if (nl.includes(t) || t.includes(nl)) return k;
+  }
+
+  // 5. Word-level partial (e.g. "overflow" → stackoverflow, "maps" → maps)
+  const words = t.split(/\s+/);
+  for (const [k, v] of Object.entries(SITES_DATA)) {
+    const nl = v.n.toLowerCase();
+    for (const w of words) {
+      if (w.length > 3 && (k.includes(w) || nl.includes(w))) return k;
+    }
+  }
+
+  return null;
+}
+
+// ══════════════════════════════════════════════════════════════════════
+//  PRE-PROCESS CLOSE COMMANDS CLIENT-SIDE
+//  Returns true if handled here (no server round-trip needed)
+// ══════════════════════════════════════════════════════════════════════
+function handleCloseCommandJS(raw) {
+  const c = raw.toLowerCase().trim();
+
+  // Generic close tab patterns
+  const genericPat = /^(?:close|shut|exit)\s*(tab|current[\s-]*tab|this[\s-]*tab|the[\s-]*tab|my[\s-]*tab|window|the\s*window|it|that|out)$/i;
+  if (genericPat.test(c) || c === 'close tab' || c === 'shut it' || c === 'close it') {
+    closeGenericTab();
+    return true;
+  }
+
+  // close <target> [tab]
+  const sitePat = /^(?:close|shut|kill|exit)\s+(?:the\s+)?(.+?)(?:\s+tab)?$/i;
+  const sm = c.match(sitePat);
+  if (sm) {
+    const target = sm[1].trim();
+
+    // Is it a desktop app? Let server handle it
+    if (isDesktopApp(target)) return false;
+
+    // Is it a known website?
+    const siteKey = findSiteKey(target);
+    if (siteKey) {
+      closeSiteTab(siteKey, SITES_DATA[siteKey].n);
+      return true;
+    }
+
+    // Unknown target — fall through to server
+    return false;
+  }
+
+  return false;
+}
+
+// ══════════════════════════════════════════════════════════════════════
+//  APP OPEN / CLOSE VIA SERVER API
+// ══════════════════════════════════════════════════════════════════════
+async function openAppViaAPI(appKey) {
+  setWake('thinking');
+  try {
+    const res = await fetch('/api/open_app', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({app_key: appKey})
+    });
+    const data = await res.json();
+    setWake('idle');
+    const msg = data.message || (data.ok ? appKey + ' opened!' : 'Could not open ' + appKey);
+    cw('MAX: ' + msg, data.ok ? 'c-max' : 'c-err');
+    speak(msg);
+    toast(msg, data.ok ? '✅' : '⚠', data.ok ? 'ok' : 'err');
+  } catch(e) {
+    setWake('idle');
+    cw('MAX: Error opening ' + appKey + ': ' + e.message, 'c-err');
+  }
+}
+
+async function closeAppViaAPI(appKey) {
+  setWake('thinking');
+  try {
+    const res = await fetch('/api/close_app', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({app_key: appKey})
+    });
+    const data = await res.json();
+    setWake('idle');
+    const msg = data.message || (data.ok ? appKey + ' closed!' : 'Could not close ' + appKey);
+    cw('MAX: ' + msg, data.ok ? 'c-max' : 'c-warn');
+    speak(msg);
+    toast(msg, data.ok ? '✅' : '⚠', data.ok ? 'ok' : 'warn');
+  } catch(e) {
+    setWake('idle');
+    cw('MAX: Error closing ' + appKey + ': ' + e.message, 'c-err');
+  }
+}
+
+// ══════════════════════════════════════════════════════════════════════
+//  COMMAND SEND / DISPATCH
+// ══════════════════════════════════════════════════════════════════════
+async function send() {
+  const inp = document.getElementById('cmd');
+  const raw = inp.value.trim();
+  if (!raw) return;
+  inp.value = '';
+  sw('console');
+  await processAndSend(raw, 'text');
+}
+
+function sendDash() {
+  const inp = document.getElementById('dashCmd');
+  const raw = inp.value.trim();
+  if (!raw) return;
+  inp.value = '';
+  sw('console');
+  processAndSend(raw, 'text');
+}
+
+async function processAndSend(raw, source) {
+  // Handle close commands client-side first (no server round-trip for websites)
+  if (handleCloseCommandJS(raw)) return;
+
+  cw(USER + (source === 'voice' ? ' [voice]' : '') + ': ' + raw, 'c-user');
+  setWake('thinking');
+  try {
+    const res = await fetch('/api/command', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({command: raw, source})
+    });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.json();
+    setWake('idle');
+    handleResp(data, raw, source === 'voice');
+  } catch(e) {
+    setWake('idle');
+    cw('MAX: Server error — ' + e.message, 'c-err');
+    toast('Server error: ' + e.message, '⚠', 'err');
+  }
+}
+
+async function sendVoice(text) {
+  sw('console');
+  await processAndSend(text, 'voice');
+  if (appMode === 'idle') scheduleWake();
+}
+
+document.getElementById('cmd').addEventListener('keydown', e => { if(e.key === 'Enter') send(); });
+document.getElementById('dashCmd').addEventListener('keydown', e => { if(e.key === 'Enter') sendDash(); });
+
+// ══════════════════════════════════════════════════════════════════════
+//  HANDLE SERVER RESPONSE
+// ══════════════════════════════════════════════════════════════════════
+function handleResp(data, cmd, fromVoice=false) {
+  if (!data) return;
+  const msg  = data.message || data.response || '';
+  const type = data.type || 'ok';
+  const cls  = {
+    ok:'c-max', warn:'c-warn', error:'c-err', ai:'c-ai', info:'c-info',
+    metric:'c-max', help:'c-ok', open:'c-max', goodbye:'c-max',
+    calc:'c-max', wiki:'c-max', define:'c-max', fun:'c-max',
+    joke:'c-max', quote:'c-max', weather:'c-max', news:'c-max',
+    app_opened:'c-ok', unknown:'c-warn'
+  }[type] || 'c-max';
+
+  const fmt = msg.replace(/\*\*(.+?)\*\*/g,'<strong>$1</strong>').replace(/\n/g,'<br>');
+  cw('MAX: ' + fmt, cls);
+  if (msg) speak(msg);
+
+  if (fromVoice) {
+    const vr = document.getElementById('voiceResp');
+    vr.textContent = msg.replace(/\*\*/g,'').substring(0,200);
+    vr.classList.add('show');
+    document.getElementById('voiceStatus').textContent = 'Done! Click orb to speak again.';
+  }
+
+  // ── OPEN SITE: always route through openSiteWindow for tracking
+  if (type === 'open' && data.url) {
+    const siteKey  = data.site_key || guessSiteKey(data.url);
+    const siteName = data.site_name || (SITES_DATA[siteKey] || {}).n || siteKey || 'page';
+    openSiteWindow(siteKey, data.url, siteName);
+    toast('Opening ' + siteName + ' 🌐', '🌐', 'ok');
+  }
+
+  // ── APP OPENED server-side
+  if (type === 'app_opened') {
+    toast((msg || 'App opened!'), '✅', 'ok');
+  }
+
+  // ── SERVER CLOSE_TAB instruction (server dispatched a close-tab for a site)
+  //    This is the fallback when server-side fuzzy matching ran first
+  if (type === 'close_tab' && data.action === 'close_tab') {
+    const key = data.site_key;
+    if (key === '__last__') {
+      closeGenericTab();
+    } else if (key) {
+      const resolvedKey = findSiteKey(key);
+      if (resolvedKey) {
+        closeSiteTab(resolvedKey, SITES_DATA[resolvedKey].n);
+      } else {
+        closeGenericTab();
+      }
+    }
+  }
+
+  // ── Confirm dialogs (shutdown / restart)
+  if (type === 'confirm') {
+    if (confirm(msg.replace(/\*\*/g,'') + '\n\nClick OK to confirm.')) {
+      fetch('/api/confirm_action', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({action: data.action})
+      }).then(r => r.json()).then(d => {
+        cw('MAX: ' + d.message, 'c-warn');
+        speak(d.message);
+      });
+    }
+  }
+
+  if (type === 'goodbye') setTimeout(() => window.location.href = '/logout', 3000);
+
+  if (type === 'help' && data.commands) {
+    data.commands.forEach(([k,v]) => cw('  ' + k.padEnd(14) + ' → ' + v, 'c-info'));
+  }
+
+  if (type === 'news' && data.headlines) {
+    data.headlines.forEach((h, i) => cw('  ' + (i+1) + '. ' + h.title + ' (' + h.source + ')', 'c-info'));
+  }
+}
+
+// Guess a stable site key from a URL
+function guessSiteKey(url) {
+  for (const [k, v] of Object.entries(SITES_DATA)) {
+    const domain = v.u.replace('https://','').split('/')[0];
+    if (url.includes(domain)) return k;
+  }
+  try {
+    return new URL(url).hostname.replace('www.','').split('.')[0];
+  } catch {
+    return 'site_' + Date.now();
+  }
+}
+
+// Quick command shortcut (used by tip buttons, quick actions, etc.)
+// Routes through processAndSend so sites get tracked properly
+function rc(cmd) {
+  sw('console');
+  document.getElementById('cmd').value = cmd;
+  send();
+}
+
+// ── Console write
+function cw(text, cls='c-info') {
+  const out = document.getElementById('cout');
+  const el  = document.createElement('div');
+  el.className = 'msg';
+  const ts  = new Date().toLocaleTimeString('en-US', {hour12: false});
+  const fmt = text.replace(/\*\*(.+?)\*\*/g,'<strong>$1</strong>').replace(/\n/g,'<br>');
+  el.innerHTML = '<span class="mts">' + ts + '</span><span class="mtxt ' + cls + '">' + fmt + '</span>';
+  out.appendChild(el);
+  out.scrollTop = out.scrollHeight;
+}
+
+// ── Stats
+async function loadStats() {
+  try {
+    const r = await fetch('/api/stats');
+    if (!r.ok) return;
+    const d = await r.json();
+    if (d.ok) {
+      function setStat(id, val) {
+        const el  = document.getElementById(id);
+        const bar = document.getElementById(id + '-bar');
+        if (el) el.textContent = val != null ? val + '%' : 'N/A';
+        if (bar && val != null) bar.style.width = Math.min(val, 100) + '%';
+      }
+      setStat('scpu', d.cpu);
+      setStat('sram', d.ram);
+      setStat('sdisk', d.disk);
+      setStat('sbat', d.battery);
+    }
+  } catch(e) {}
+}
+loadStats();
+setInterval(loadStats, 15000);
+
+// ── Panel switcher
+function sw(name) {
+  document.querySelectorAll('.panel').forEach(p => p.classList.remove('on'));
+  document.querySelectorAll('.sbb[id^="sb-"]').forEach(b => b.classList.remove('on'));
+  const p = document.getElementById('p-' + name);
+  const s = document.getElementById('sb-' + name);
+  if (p) p.classList.add('on');
+  if (s) s.classList.add('on');
+  if (name === 'history') loadHistory();
+}
+
+// ── Sites grid — clicking here also tracks via openSiteWindow
+(function() {
+  const g = document.getElementById('sitesGrid');
+  if (!g) return;
+  g.innerHTML = Object.entries(SITES_DATA).map(([k, s]) => `
+    <div class="site-card" onclick="openSite('${k}','${s.u}','${s.n}')">
+      <div class="si">${s.i}</div>
+      <div class="sn">${s.n}</div>
+      <div class="su">${s.u.replace('https://','')}</div>
+    </div>`).join('');
+})();
+
+// openSite is called from sites-grid clicks — routes through openSiteWindow
+function openSite(key, url, name) {
+  openSiteWindow(key, url, name);
+  cw('MAX: Opening ' + name + '! 🌐', 'c-max');
+  speak('Opening ' + name);
+  sw('console');
+}
+
+// ── Tools grid
+const TOOLS = [
+  {t:'🧮 Calculator', d:'Math expressions via Flask backend.',  c:'var(--t)', fn:"om('calc')"},
+  {t:'📝 Quick Note',  d:'Write and download notes as .txt.',   c:'var(--g)', fn:"om('note')"},
+  {t:'⏱ Timer',       d:'Countdown timer with audio alert.',    c:'var(--v)', fn:"om('timer')"},
+  {t:'⏰ Alarm',       d:'Schedule a timed reminder.',          c:'var(--r)', fn:"om('alarm')"},
+  {t:'📖 Wikipedia',  d:'Server-side Wikipedia search.',        c:'var(--m)', fn:"om('wiki')"},
+  {t:'📚 Dictionary', d:'Free Dictionary API lookups.',         c:'var(--o)', fn:"om('define')"},
+  {t:'🌤 Weather',    d:'Live weather via OpenWeather API.',    c:'var(--t)', fn:"om('weather')"},
+  {t:'📰 News',       d:'Top headlines via NewsAPI.',           c:'var(--g)', fn:"rc('news');sw('console')"},
+  {t:'🤖 Ask Claude AI', d:'Full AI chat via Anthropic API.',  c:'var(--v)', fn:"om('ai')"},
+  {t:'🔍 Google Search', d:'Search the web instantly.',        c:'var(--r)', fn:"om('search')"},
+  {t:'▶ YouTube',     d:'Search and open YouTube videos.',     c:'var(--r)', fn:"om('ytsearch')"},
+  {t:'⚙ API Keys',    d:'Set OpenWeather, News, Claude keys.', c:'var(--o)', fn:"openSettings()"},
+];
+(function() {
+  const g = document.getElementById('toolsGrid');
+  if (!g) return;
+  g.innerHTML = TOOLS.map(t => `
+    <div class="tool-card" onclick="${t.fn}">
+      <h3>${t.t}</h3><p>${t.d}</p>
+      <button class="tool-run" style="background:${t.c};color:#070B14">Launch →</button>
+    </div>`).join('');
+})();
+
+// ── History
+async function loadHistory() {
+  try {
+    const r = await fetch('/api/history');
+    if (!r.ok) return;
+    const d = await r.json();
+    const log = document.getElementById('histLog');
+    if (!d.ok || !d.history.length) {
+      log.innerHTML = '<div style="color:var(--tx2);font-size:13px;font-family:\'JetBrains Mono\',monospace">No commands yet.</div>';
+      return;
+    }
+    log.innerHTML = d.history.map(h => `
+      <div class="hitem">
+        <div class="hcmd">&gt; ${h.command}</div>
+        <div class="hresp">${(h.response||'').substring(0,200).replace(/\*\*/g,'')}</div>
+        <div class="hmeta">${new Date(h.created_at).toLocaleTimeString()}
+          <span class="hsrc src-${h.source}">${h.source}</span></div>
+      </div>`).join('');
+  } catch(e) {}
+}
+
+// ── Modals
+function om(type) {
+  const C = {
+    calc:    {t:'🧮 Calculator',   d:'Enter a math expression',
+              h:`<input class="mi" id="mi" placeholder="e.g. 100 / 4 + 50"><div class="mres" id="mr"></div>
+                 <div class="mbtns"><button class="mbtn mok" onclick="doCalc()">Calculate</button><button class="mbtn mcancel" onclick="cm()">Close</button></div>`},
+    note:    {t:'📝 Quick Note',   d:'Write your note — downloads as .txt',
+              h:`<textarea class="mta" id="mta" placeholder="Start writing…"></textarea>
+                 <div class="mbtns"><button class="mbtn mok" onclick="doNote()">Save & Download</button><button class="mbtn mcancel" onclick="cm()">Discard</button></div>`},
+    timer:   {t:'⏱ Set Timer',    d:'e.g. 5 minutes / 2 hours / 30 seconds',
+              h:`<input class="mi" id="mi" placeholder="e.g. 10 minutes"><div class="tdisp" id="tdisp" style="display:none">00:00</div><div class="tlbl" id="tlbl"></div>
+                 <div class="mbtns"><button class="mbtn mok" onclick="doTimer()">Start Timer</button><button class="mbtn mcancel" onclick="cm()">Close</button></div>`},
+    alarm:   {t:'⏰ Set Alarm',    d:'Pick a time for your alarm.',
+              h:`<input class="mi" id="mi" type="time"><div class="mbtns"><button class="mbtn mok" onclick="doAlarm()">Set Alarm</button><button class="mbtn mcancel" onclick="cm()">Cancel</button></div>`},
+    wiki:    {t:'📖 Wikipedia',    d:'Search Wikipedia',
+              h:`<input class="mi" id="mi" placeholder="e.g. quantum computing">
+                 <div class="mbtns"><button class="mbtn mok" onclick="rc('wikipedia '+document.getElementById('mi').value);cm()">Search</button><button class="mbtn mcancel" onclick="cm()">Cancel</button></div>`},
+    define:  {t:'📚 Dictionary',   d:'Look up any English word.',
+              h:`<input class="mi" id="mi" placeholder="e.g. ephemeral"><div class="mres" id="mr"></div>
+                 <div class="mbtns"><button class="mbtn mok" onclick="doDefine()">Look Up</button><button class="mbtn mcancel" onclick="cm()">Close</button></div>`},
+    weather: {t:'🌤 Weather',      d:'Requires OpenWeather API key in Settings.',
+              h:`<input class="mi" id="mi" placeholder="City name e.g. Warangal" value="Warangal"><div class="mres" id="mr"></div>
+                 <div class="mbtns"><button class="mbtn mok" onclick="doWeather()">Get Weather</button><button class="mbtn mcancel" onclick="cm()">Close</button></div>`},
+    search:  {t:'🔍 Google Search', d:'Opens Google in a new tab.',
+              h:`<input class="mi" id="mi" placeholder="What to search?">
+                 <div class="mbtns"><button class="mbtn mok" onclick="rc('search '+document.getElementById('mi').value);cm()">Search</button><button class="mbtn mcancel" onclick="cm()">Cancel</button></div>`},
+    ytsearch:{t:'▶ YouTube Search', d:'Search YouTube videos.',
+              h:`<input class="mi" id="mi" placeholder="e.g. lo-fi music">
+                 <div class="mbtns"><button class="mbtn mok" onclick="rc('youtube search '+document.getElementById('mi').value);cm()">Search</button><button class="mbtn mcancel" onclick="cm()">Cancel</button></div>`},
+    ai:      {t:'🤖 Ask Claude AI', d:'Add your Anthropic API key in Settings first.',
+              h:`<textarea class="mta" id="mta" placeholder="Ask anything…" style="height:110px"></textarea>
+                 <div class="mres" id="mr"></div>
+                 <div class="mbtns"><button class="mbtn mok" onclick="doAI()">Ask Claude ✨</button><button class="mbtn mcancel" onclick="cm()">Close</button></div>`},
+  };
+  const cfg = C[type];
+  if (!cfg) return;
+  document.getElementById('mtitle').textContent = cfg.t;
+  document.getElementById('mdesc').textContent  = cfg.d;
+  document.getElementById('mbody').innerHTML    = cfg.h;
+  document.getElementById('mbg').classList.add('on');
+  setTimeout(() => { const i = document.getElementById('mi'); if (i) i.focus(); }, 80);
+}
+function cm() { document.getElementById('mbg').classList.remove('on'); clearTI(); }
+
+function doCalc() {
+  const e = document.getElementById('mi').value.trim();
+  const mr = document.getElementById('mr'); mr.style.display = 'block'; mr.textContent = 'Calculating…';
+  fetch('/api/command', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({command:'calculate '+e})})
+    .then(r => r.json()).then(d => {
+      mr.textContent = (d.message||'').replace(/\*\*/g,'');
+      mr.style.color = d.type === 'calc' ? 'var(--m)' : 'var(--r)';
+    }).catch(() => { mr.textContent = 'Error'; mr.style.color = 'var(--r)'; });
+}
+
+function doNote() {
+  const c = (document.getElementById('mta')||{}).value?.trim();
+  if (!c) { toast('Note is empty','⚠','warn'); return; }
+  const blob = new Blob([c], {type:'text/plain'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'note_' + new Date().toISOString().slice(0,19).replace(/:/g,'') + '.txt';
+  a.click();
+  cw('MAX: Note saved and downloaded! 📝','c-max'); speak('Note saved!');
+  toast('Note downloaded','📝','ok'); cm();
+}
+
+let timerInt = null;
+function clearTI() { if (timerInt) { clearInterval(timerInt); timerInt = null; } }
+function doTimer() {
+  const v = document.getElementById('mi').value;
+  const m = v.match(/(\d+)\s*(hour|minute|second)/i);
+  if (!m) { toast('Format: 5 minutes / 2 hours / 30 seconds','⚠','warn'); return; }
+  const secs = m[2][0]==='h' ? parseInt(m[1])*3600 : m[2][0]==='m' ? parseInt(m[1])*60 : parseInt(m[1]);
+  let rem = secs; clearTI();
+  const disp = document.getElementById('tdisp'), lbl = document.getElementById('tlbl');
+  if (disp) disp.style.display = 'block';
+  function fmt(s) { const h=Math.floor(s/3600),mn=Math.floor((s%3600)/60),sc=s%60;
+    return h ? `${h}:${String(mn).padStart(2,'0')}:${String(sc).padStart(2,'0')}`
+             : `${String(mn).padStart(2,'0')}:${String(sc).padStart(2,'0')}`; }
+  if (disp) disp.textContent = fmt(secs); if (lbl) lbl.textContent = 'Timer running…';
+  timerInt = setInterval(() => {
+    rem--;
+    if (disp) disp.textContent = fmt(rem);
+    if (rem <= 0) {
+      clearTI();
+      if (lbl) lbl.textContent = '✅ Done!';
+      if (disp) disp.style.color = 'var(--r)';
+      cw('MAX: ⏰ Timer done! (' + v + ')','c-max'); speak('Timer done!');
+      toast('⏰ Timer Done! ' + v,'🔔','ok',8000);
+    }
+  }, 1000);
+  cw('MAX: Timer set for ' + v + '! ⏱','c-max'); speak('Timer set for ' + v);
+  toast('Timer started: ' + v,'⏱','ok');
+}
+
+function doAlarm() {
+  const v = document.getElementById('mi').value;
+  if (!v) { toast('Pick a time','⚠','warn'); return; }
+  const [h, mn] = v.split(':').map(Number);
+  const now = new Date(), alarm = new Date(); alarm.setHours(h, mn, 0, 0);
+  if (alarm <= now) alarm.setDate(alarm.getDate() + 1);
+  const diff = alarm - now;
+  const lbl = alarm.toLocaleTimeString('en-US', {hour:'2-digit', minute:'2-digit'});
+  cw('MAX: Alarm set for ' + lbl + '! ⏰','c-max'); speak('Alarm set for ' + lbl);
+  toast('Alarm set for ' + lbl,'⏰','ok'); cm();
+  setTimeout(() => {
+    cw('MAX: ⏰ ALARM! Wake up, ' + USER + '!','c-max');
+    speak('Wake up ' + USER + '! It is ' + lbl + '!');
+    toast('⏰ ALARM! It\'s ' + lbl,'🔔','ok',10000);
+  }, diff);
+}
+
+function doDefine() {
+  const w = document.getElementById('mi').value.trim();
+  const mr = document.getElementById('mr');
+  if (!w) return;
+  mr.style.display = 'block'; mr.textContent = 'Looking up…';
+  fetch('/api/command', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({command:'define '+w})})
+    .then(r => r.json()).then(d => {
+      mr.textContent = (d.message||'').replace(/\*\*/g,''); mr.style.color = 'var(--m)';
+      cw('MAX: ' + (d.message||''),'c-max'); speak(d.message||'');
+    }).catch(() => { mr.textContent = 'Error'; mr.style.color = 'var(--r)'; });
+}
+
+function doWeather() {
+  const city = document.getElementById('mi').value.trim() || 'Warangal';
+  const mr = document.getElementById('mr'); mr.style.display = 'block'; mr.textContent = 'Fetching weather for ' + city + '…';
+  fetch('/api/command', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({command:'weather in '+city})})
+    .then(r => r.json()).then(d => {
+      mr.textContent = (d.message||'').replace(/\*\*/g,''); mr.style.color = 'var(--m)';
+      cw('MAX: ' + (d.message||''),'c-max'); speak(d.message||'');
+    }).catch(() => { mr.textContent = 'Error'; mr.style.color = 'var(--r)'; });
+}
+
+async function doAI() {
+  const q = (document.getElementById('mta')||{}).value?.trim();
+  const mr = document.getElementById('mr');
+  if (!q) { toast('Please enter a question','⚠','warn'); return; }
+  mr.style.display = 'block'; mr.textContent = 'Asking Claude AI…'; mr.style.color = 'var(--tx1)';
+  try {
+    const r = await fetch('/api/command', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({command:q})});
+    const d = await r.json();
+    mr.textContent = (d.message||'').replace(/\*\*/g,'');
+    mr.style.color = d.type==='ai' ? 'var(--v)' : d.type==='error' ? 'var(--r)' : 'var(--m)';
+    cw('MAX: ' + (d.message||''), d.type==='ai' ? 'c-ai' : 'c-max');
+    speak(d.message||'');
+  } catch(e) { mr.textContent = 'Error: ' + e.message; mr.style.color = 'var(--r)'; }
+}
+
+// ── Settings
+function openSettings() {
+  fetch('/api/settings').then(r => r.json()).then(d => {
+    document.getElementById('mtitle').textContent = '⚙ Settings & API Keys';
+    document.getElementById('mdesc').textContent  = 'Keys are stored securely in the database per user.';
+    document.getElementById('mbody').innerHTML = `
+      <div class="api-note">🔑 Keys stored in SQLite. Get free keys at the links below.</div>
+      <label style="font-size:10px;color:var(--tx2);font-family:'JetBrains Mono',monospace;letter-spacing:2px;text-transform:uppercase">OpenWeather Key <a href="https://openweathermap.org/api" target="_blank" style="color:var(--t);text-decoration:none">↗ free</a></label>
+      <input class="mi" id="owInp" type="password" placeholder="Paste your OpenWeather API key" style="margin-top:6px" value="${d.ow_key?'••••••••':''}">
+      <label style="font-size:10px;color:var(--tx2);font-family:'JetBrains Mono',monospace;letter-spacing:2px;text-transform:uppercase;display:block;margin-top:8px">NewsAPI Key <a href="https://newsapi.org" target="_blank" style="color:var(--t);text-decoration:none">↗ free</a></label>
+      <input class="mi" id="nwInp" type="password" placeholder="Paste your NewsAPI key" style="margin-top:6px" value="${d.news_key?'••••••••':''}">
+      <label style="font-size:10px;color:var(--tx2);font-family:'JetBrains Mono',monospace;letter-spacing:2px;text-transform:uppercase;display:block;margin-top:8px">Anthropic / Claude AI Key <a href="https://console.anthropic.com" target="_blank" style="color:var(--t);text-decoration:none">↗ get key</a></label>
+      <input class="mi" id="aiInp" type="password" placeholder="Paste your Anthropic API key" style="margin-top:6px" value="${d.anthropic_key?'••••••••':''}">
+      <div style="font-size:11px;color:var(--tx2);font-family:'JetBrains Mono',monospace;margin:8px 0 14px">Commands run: ${d.cmd_count} · Member since ${d.created_at} · Last login: ${d.last_login}</div>
+      <div class="mbtns"><button class="mbtn mok" onclick="saveSettings()">Save Keys</button><button class="mbtn mcancel" onclick="cm()">Close</button></div>`;
+    document.getElementById('mbg').classList.add('on');
+  }).catch(() => toast('Could not load settings','⚠','err'));
+}
+
+async function saveSettings() {
+  const ow = document.getElementById('owInp').value.trim();
+  const nw = document.getElementById('nwInp').value.trim();
+  const ai = document.getElementById('aiInp').value.trim();
+  const body = {};
+  if (ow && !ow.includes('•')) body.ow_key = ow;
+  if (nw && !nw.includes('•')) body.news_key = nw;
+  if (ai && !ai.includes('•')) body.claude_key = ai;
+  if (!Object.keys(body).length) { toast('No new keys entered','⚠','warn'); return; }
+  try {
+    const r = await fetch('/api/settings', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
+    const d = await r.json();
+    if (d.ok) { toast('API keys saved! ✅','🔑','ok'); cm(); cw('MAX: API keys updated!','c-ok'); speak('API keys saved!'); }
+    else toast('Error: ' + (d.message||'unknown'),'⚠','err');
+  } catch(e) { toast('Save failed: ' + e.message,'⚠','err'); }
+}
+
+// ── Toast notifications
+function toast(msg, ico='ℹ', type='info', dur=4000) {
+  const cols = {info:'#8DA4C8', ok:'#39FF85', warn:'#FF8C30', err:'#FF5C5C'};
+  const div = document.createElement('div'); div.className = 'toast';
+  div.style.borderLeft = '3px solid ' + (cols[type]||cols.info);
+  div.innerHTML = `<span style="font-size:15px">${ico}</span><span style="flex:1;color:${cols[type]||cols.info};font-size:12px">${msg}</span><span class="tc" onclick="this.parentElement.remove()">✕</span>`;
+  document.getElementById('tw').appendChild(div);
+  setTimeout(() => { div.classList.add('tout'); setTimeout(() => div.remove(), 200); }, dur);
+}
+
+// ── Audio unlock
+let audioUnlocked_ = false;
+function unlockAudio() {
+  if (audioUnlocked_) return; audioUnlocked_ = true;
+  try {
+    const ctx = new(window.AudioContext||window.webkitAudioContext)();
+    const buf = ctx.createBuffer(1,1,22050);
+    const src = ctx.createBufferSource();
+    src.buffer = buf; src.connect(ctx.destination); src.start(0);
+    ctx.resume().catch(() => {});
+  } catch(e) {}
+}
+document.addEventListener('keydown', () => unlockAudio(), {once:true});
+document.addEventListener('click',   () => unlockAudio(), {once:true});
+
+// ══════════════════════════════════════════════════════════════════════
+//  BOOT
+// ══════════════════════════════════════════════════════════════════════
+function boot() {
+  cw('╔══════════════════════════════════════════════╗','c-ok');
+  cw('║  MAX v2.0                                    ║','c-ok');
+  cw('╚══════════════════════════════════════════════╝','c-ok');
+  cw('','c-info');
+  cw('  Voice  : Click 🎤 orb, press SPACE, or say "Hey MAX"','c-info');
+  cw('  Apps   : "open notepad", "open calculator", "close notepad"','c-info');
+  cw('  Sites  : "open youtube", "close youtube", "close instagram"','c-info');
+  cw('  System : "cpu", "ram", "battery", "disk", "ping"','c-info');
+  cw('  Fun    : "joke", "flip coin", "roll dice"','c-info');
+  cw('','c-info');
+
+  fetch('/api/greeting')
+    .then(r => r.json())
+    .then(d => {
+      if (d.ok && d.message) {
+        cw('MAX: ' + d.message,'c-max');
+        setTimeout(() => speak(d.message), 500);
+      }
+    })
+    .catch(() => {
+      const h = new Date().getHours();
+      const g = h < 12 ? 'Good morning' : h < 18 ? 'Good afternoon' : 'Good evening';
+      const msg = g + ', ' + USER + '! I\'m MAX v5.4. How can I help you today?';
+      cw('MAX: ' + msg,'c-max');
+      setTimeout(() => speak(msg), 500);
+    });
+}
+boot();
+
+// Auto-start wake word listener
+(function() {
+  if (!SR) {
+    cw('MAX: ⚠ Web Speech API not supported. Use Google Chrome.','c-err');
+    return;
+  }
+  appMode = 'wake';
+  startWake();
+  document.getElementById('voiceStatus').textContent = 'Say "Hey MAX" anytime — I am listening';
+  cw('MAX: Wake word ACTIVE. Say "Hey MAX" to wake me!','c-ok');
+})();
+</script>
+</body>
+</html>
