@@ -1,0 +1,61 @@
+# ======================
+# MAX — Personal AI Assistant
+# .gitignore
+# ======================
+
+# !! NEVER commit these !!
+.env
+*.env
+.env.*
+!.env.example
+
+# SQLite database (auto-generated)
+instance/
+*.db
+*.sqlite
+*.sqlite3
+
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+
+# Virtual environments
+venv/
+env/
+.venv/
+.env/
+ENV/
+
+# Flask stuff
+flask_session/
+.flask_secret
+
+# Screenshots saved by MAX
+screenshots/
+*.png
+
+# Notes saved by MAX
+*.txt
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE / Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+logs/
+
+# Build / dist
+dist/
+build/
+*.egg-info/
